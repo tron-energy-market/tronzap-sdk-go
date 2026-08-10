@@ -32,7 +32,9 @@ const (
 	CodeInvalidEnergyAmount = 11
 	// CodeInvalidDuration means the requested duration is not supported.
 	CodeInvalidDuration = 12
-	// CodeTransactionNotFound means no transaction matches the given id or external id.
+	// CodeTransactionNotFound means no transaction or subscription matches the
+	// given id or external id. The API reports it under the key
+	// "subscription_not_found".
 	CodeTransactionNotFound = 20
 	// CodeCannotStopSubscription means the subscription cannot be stopped right now.
 	CodeCannotStopSubscription = 21

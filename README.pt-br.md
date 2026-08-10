@@ -86,9 +86,10 @@ export TRONZAP_BASE_URL=api.tronzap.com   # opcional
 go run ./examples/basic
 ```
 
-Ele apenas lê, nunca compra. Consulte o comentário no início do arquivo para as
-variáveis opcionais que habilitam as chamadas que precisam de um endereço, de uma
-transação ou de um identificador de verificação.
+Por padrão ele apenas lê e não gasta nada. Definir `TRONZAP_ALLOW_PURCHASES=1`
+também exercita os endpoints que criam transações e verificações AML, que debitam
+o saldo da conta. Consulte o comentário no início do arquivo para as demais
+variáveis opcionais.
 
 ## Configuração
 

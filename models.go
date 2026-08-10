@@ -253,7 +253,7 @@ type AMLCheckRequest struct {
 	Type string
 	// Network is the blockchain network code, for example "TRX", "BTC" or "ETH". Required.
 	Network string
-	// Address is the address to screen. For [AMLTypeHash] it is the counterparty
+	// Address is the address to screen. For [AMLTypeHash] it is the recipient
 	// address of the transaction. Required.
 	Address string
 	// Hash is the transaction hash. Required for [AMLTypeHash].
@@ -524,7 +524,7 @@ type AMLRiskFactor struct {
 	Label string `json:"label"`
 	// Group is the risk group the factor belongs to, such as "low" or "medium".
 	Group string `json:"group"`
-	// Score is the factor's share of the overall risk, from 0 to 1.
+	// Score is the factor's weight, from 0 to 1.
 	Score Number `json:"score"`
 }
 

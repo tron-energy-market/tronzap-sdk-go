@@ -76,7 +76,7 @@ func main() {
 }
 ```
 
-A runnable walkthrough of every read-only operation lives in
+A runnable walkthrough of every operation lives in
 [`examples/basic`](examples/basic/main.go):
 
 ```bash
@@ -86,8 +86,10 @@ export TRONZAP_BASE_URL=api.tronzap.com   # optional
 go run ./examples/basic
 ```
 
-It only reads, never buys. See the comment at the top of the file for the optional
-variables that unlock the calls needing an address, a transaction or a check id.
+By default it only reads and spends nothing. Setting `TRONZAP_ALLOW_PURCHASES=1`
+also exercises the endpoints that create transactions and AML checks, which debit
+the account balance. See the comment at the top of the file for the other optional
+variables.
 
 ## Configuration
 
