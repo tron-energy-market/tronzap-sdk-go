@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+# Every step runs under bash, including on Windows, where the default would be
+# PowerShell. PowerShell mangles arguments such as -coverprofile=coverage.out
+# into two tokens, which makes go test read ".out" as a package name.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
