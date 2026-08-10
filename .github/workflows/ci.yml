@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The oldest supported release plus the current one.
+        go: ['1.21', 'stable']
+        exclude:
+          # The version floor only needs one platform. macOS and Windows are here
+          # to exercise the platform-specific network error classification.
+          - {os: macos-latest, go: '1.21'}
+          - {os: windows-latest, go: '1.21'}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+
+      # Formatting and module hygiene are platform-independent, so they run on one
+      # runner. Checking them on Windows would only invite line-ending noise.
+      - name: Verify gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: Verify go.mod is tidy
+        if: runner.os == 'Linux'
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage summary
+        if: runner.os == 'Linux'
+        run: go tool cover -func=coverage.out | tail -1
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # Linters are pinned rather than tracking latest, so a new release cannot
+      # break CI on an unchanged commit.
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+
+      - name: golangci-lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
