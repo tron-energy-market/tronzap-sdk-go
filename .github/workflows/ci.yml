@@ -82,10 +82,11 @@ jobs:
         with:
           go-version: stable
 
-      # Linters are pinned rather than tracking latest, so a new release cannot
-      # break CI on an unchanged commit.
+      # Linters are pinned rather than tracking latest, so a new linter release
+      # cannot break CI on an unchanged commit. Go itself is not: a new Go release
+      # can outgrow a pinned linter, and then the linter needs a bump.
       - name: staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
       - name: golangci-lint
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
