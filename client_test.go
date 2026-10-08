@@ -184,6 +184,34 @@ func TestSignatureCoversRequestBody(t *testing.T) {
 	}
 }
 
+func TestSignatureCoversNonASCIIBody(t *testing.T) {
+	const externalID = "pedido-año-订单-😀"
+	client, got := newServer(t, http.StatusOK, ok(`{"id":"tx-1"}`))
+
+	_, err := client.CreateEnergyTransaction(context.Background(), tronzap.EnergyTransactionRequest{
+		Address:    "TAddress",
+		Energy:     65000,
+		ExternalID: externalID,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnergyTransaction: %v", err)
+	}
+
+	var body struct {
+		ExternalID string `json:"external_id"`
+	}
+	if err := json.Unmarshal([]byte(got.Body()), &body); err != nil {
+		t.Fatalf("request body is not valid JSON: %v", err)
+	}
+	if body.ExternalID != externalID {
+		t.Errorf("external_id = %q, want %q", body.ExternalID, externalID)
+	}
+	digest := sha256.Sum256([]byte(got.Body() + testSecret))
+	if want := hex.EncodeToString(digest[:]); got.HeaderValue("X-Signature") != want {
+		t.Errorf("signature does not match the body actually sent:\nbody %s", got.Body())
+	}
+}
+
 func TestRequestBodies(t *testing.T) {
 	tests := []struct {
 		name string
