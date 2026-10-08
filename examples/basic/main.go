@@ -153,8 +153,8 @@ func showCatalogue(ctx context.Context, client *tronzap.Client) error {
 	}
 	fmt.Println("\nEnergy tiers:")
 	for _, tier := range services.Energy {
-		fmt.Printf("  %d-%d energy for %dh: %s per unit, 65k costs %s\n",
-			tier.MinEnergy, tier.MaxEnergy, tier.Duration, tier.Price, tier.Price65K)
+		fmt.Printf("  %d-%d energy for %dh: %s per 1000 units, 65k costs %s\n",
+			tier.MinAmount, tier.MaxAmount, tier.Duration, tier.Price, tier.Price65K)
 	}
 	fmt.Println("Bandwidth tiers:")
 	for _, tier := range services.Bandwidth {
@@ -224,7 +224,7 @@ func showEstimate(ctx context.Context, client *tronzap.Client, from, to string) 
 		return fmt.Errorf("estimate energy: %w", err)
 	}
 	fmt.Printf("\nTransfer %s -> %s needs %d energy, costs %s\n",
-		from, to, estimate.Energy, estimate.Total)
+		from, to, estimate.Amount, estimate.Total)
 	return nil
 }
 

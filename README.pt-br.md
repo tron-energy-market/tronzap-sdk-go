@@ -64,7 +64,7 @@ func main() {
 
 	tx, err := client.CreateEnergyTransaction(ctx, tronzap.EnergyTransactionRequest{
 		Address:         "TRecipientAddress",
-		Energy:          estimate.Energy,
+		Energy:          estimate.Amount,
 		Duration:        1,
 		ExternalID:      "order-42",
 		ActivateAddress: true,
@@ -159,7 +159,7 @@ código. Valores zero significam «usar o padrão da API»: `Duration` passa a s
 tx, err := client.CreateEnergyTransaction(ctx, tronzap.EnergyTransactionRequest{
 	Address:         "TRecipientAddress",
 	Energy:          65000,
-	Duration:        1,      // horas; 1 ou 24
+	Duration:        1,      // horas; apenas 1 é suportado
 	ExternalID:      "order-42",
 	ActivateAddress: true,
 })

@@ -64,7 +64,7 @@ func main() {
 
 	tx, err := client.CreateEnergyTransaction(ctx, tronzap.EnergyTransactionRequest{
 		Address:         "TRecipientAddress",
-		Energy:          estimate.Energy,
+		Energy:          estimate.Amount,
 		Duration:        1,
 		ExternalID:      "order-42",
 		ActivateAddress: true,
@@ -161,7 +161,7 @@ página 1 con 10 elementos.
 tx, err := client.CreateEnergyTransaction(ctx, tronzap.EnergyTransactionRequest{
 	Address:         "TRecipientAddress",
 	Energy:          65000,
-	Duration:        1,      // horas; 1 o 24
+	Duration:        1,      // horas; solo se admite 1
 	ExternalID:      "order-42",
 	ActivateAddress: true,
 })

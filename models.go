@@ -291,12 +291,8 @@ type EnergyRate struct {
 	MinAmount int64 `json:"min_amount"`
 	// MaxAmount is the largest purchasable amount in this tier.
 	MaxAmount int64 `json:"max_amount"`
-	// MinEnergy is the smallest purchasable energy amount in this tier.
-	MinEnergy int64 `json:"min_energy"`
-	// MaxEnergy is the largest purchasable energy amount in this tier.
-	MaxEnergy int64 `json:"max_energy"`
-	// Price is the cost per single unit of energy. Bandwidth is priced per 1000
-	// units instead, see [BandwidthRate.Price].
+	// Price is the cost per 1000 units of energy, so 65,000 energy at a price of
+	// 0.03 costs 1.95. Bandwidth is priced the same way, see [BandwidthRate.Price].
 	Price Number `json:"price"`
 	// Price32K is the price of 32,000 energy at this tier.
 	Price32K Number `json:"price_32k"`
@@ -315,7 +311,7 @@ type BandwidthRate struct {
 	// MaxAmount is the largest purchasable amount in this tier.
 	MaxAmount int64 `json:"max_amount"`
 	// Price is the cost per 1000 units of bandwidth, so 345 bandwidth at a price
-	// of 1 costs 0.345. Energy is priced per single unit instead.
+	// of 1 costs 0.345. Energy is priced the same way, see [EnergyRate.Price].
 	Price Number `json:"price"`
 }
 
@@ -363,8 +359,6 @@ type Resources struct {
 type EnergyEstimate struct {
 	// Amount is the estimated resource amount.
 	Amount int64 `json:"amount"`
-	// Energy is the estimated energy amount.
-	Energy int64 `json:"energy"`
 	// Duration is the rental duration in hours the price refers to.
 	Duration int `json:"duration"`
 	// Price is the cost of the energy.
@@ -389,8 +383,6 @@ type Calculation struct {
 	Type string `json:"type"`
 	// Amount is the resource amount that was priced.
 	Amount int64 `json:"amount"`
-	// Energy is the energy amount that was priced.
-	Energy int64 `json:"energy"`
 	// Duration is the rental duration in hours.
 	Duration int `json:"duration"`
 	// Price is the cost of the resources.
@@ -478,7 +470,7 @@ type DirectRechargeRate struct {
 	MinEnergy int64 `json:"min_energy"`
 	// MaxEnergy is the largest purchasable energy amount in this tier.
 	MaxEnergy int64 `json:"max_energy"`
-	// Price is the cost per single unit of energy.
+	// Price is the cost of 1000 units of energy.
 	Price Number `json:"price"`
 	// Price32K is the price of 32,000 energy at this tier.
 	Price32K Number `json:"price_32k"`

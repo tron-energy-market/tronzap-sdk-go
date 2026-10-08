@@ -480,8 +480,8 @@ func TestGetServices(t *testing.T) {
 		t.Fatalf("energy tiers = %d, want 1", len(services.Energy))
 	}
 	tier := services.Energy[0]
-	if tier.MinEnergy != 50000 || tier.MaxEnergy != 131000 {
-		t.Errorf("energy range = %d..%d", tier.MinEnergy, tier.MaxEnergy)
+	if tier.MinAmount != 50000 || tier.MaxAmount != 131000 {
+		t.Errorf("energy range = %d..%d", tier.MinAmount, tier.MaxAmount)
 	}
 	if tier.Price.Float64() != 0.0523 {
 		t.Errorf("price = %v, want 0.0523", tier.Price)
@@ -543,8 +543,8 @@ func TestEstimateEnergy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EstimateEnergy: %v", err)
 	}
-	if estimate.Energy != 64400 || estimate.Amount != 64400 {
-		t.Errorf("energy = %d, amount = %d", estimate.Energy, estimate.Amount)
+	if estimate.Amount != 64400 {
+		t.Errorf("amount = %d, want 64400", estimate.Amount)
 	}
 	if estimate.Total.Float64() != 3.66 {
 		t.Errorf("total = %v, want 3.66", estimate.Total)

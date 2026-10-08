@@ -21,7 +21,7 @@
 //
 //	tx, err := client.CreateEnergyTransaction(ctx, tronzap.EnergyTransactionRequest{
 //		Address: to,
-//		Energy:  estimate.Energy,
+//		Energy:  estimate.Amount,
 //	})
 //
 // # Errors
