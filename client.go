@@ -57,7 +57,7 @@ import (
 )
 
 // Version is the SDK version, reported in the default User-Agent.
-const Version = "0.1.0"
+const Version = "1.0.0"
 
 // DefaultBaseURL is the production API endpoint.
 const DefaultBaseURL = "https://api.tronzap.com"
