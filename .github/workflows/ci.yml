@@ -85,7 +85,11 @@ jobs:
       # Linters are pinned rather than tracking latest, so a new linter release
       # cannot break CI on an unchanged commit. Go itself is not: a new Go release
       # can outgrow a pinned linter, and then the linter needs a bump.
+      # staticcheck 0.8.1 cannot read Go 1.27 export data:
+      # https://github.com/dominikh/go-tools/issues/1832
       - name: staticcheck
+        env:
+          GOTOOLCHAIN: go1.26.9
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
       - name: golangci-lint
