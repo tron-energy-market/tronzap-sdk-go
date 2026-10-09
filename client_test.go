@@ -422,6 +422,91 @@ func TestRequestBodies(t *testing.T) {
 			wantBody: `{"page":2,"per_page":5,"status":"completed"}`,
 		},
 		{
+			name: "subscriptions",
+			call: func(c *tronzap.Client) error {
+				_, err := c.GetSubscriptions(context.Background())
+				return err
+			},
+			wantPath: "/v1/subscriptions",
+			wantBody: `{}`,
+		},
+		{
+			name: "start subscription",
+			call: func(c *tronzap.Client) error {
+				_, err := c.StartSubscription(context.Background(), tronzap.StartSubscriptionRequest{
+					SubscriptionID:  "unlimited_energy",
+					Address:         "TAddress",
+					DurationDays:    30,
+					ExternalID:      "sub-1",
+					ActivateAddress: true,
+				})
+				return err
+			},
+			wantPath: "/v1/subscription/start",
+			wantBody: `{"subscription_id":"unlimited_energy","external_id":"sub-1","params":{"address":"TAddress","duration":30,"transactions_limit":0,"activate_address":true}}`,
+		},
+		{
+			name: "start subscription sends zero limits",
+			call: func(c *tronzap.Client) error {
+				_, err := c.StartSubscription(context.Background(), tronzap.StartSubscriptionRequest{
+					SubscriptionID: "unlimited_energy",
+					Address:        "TAddress",
+				})
+				return err
+			},
+			wantPath: "/v1/subscription/start",
+			wantBody: `{"subscription_id":"unlimited_energy","params":{"address":"TAddress","duration":0,"transactions_limit":0}}`,
+		},
+		{
+			name: "check subscription by id",
+			call: func(c *tronzap.Client) error {
+				_, err := c.CheckSubscription(context.Background(), tronzap.SubscriptionRequest{ID: "sub-1"})
+				return err
+			},
+			wantPath: "/v1/subscription/check",
+			wantBody: `{"id":"sub-1"}`,
+		},
+		{
+			name: "check subscription by external id",
+			call: func(c *tronzap.Client) error {
+				_, err := c.CheckSubscription(context.Background(), tronzap.SubscriptionRequest{ExternalID: "ext-1"})
+				return err
+			},
+			wantPath: "/v1/subscription/check",
+			wantBody: `{"external_id":"ext-1"}`,
+		},
+		{
+			name: "stop subscription",
+			call: func(c *tronzap.Client) error {
+				_, err := c.StopSubscription(context.Background(), tronzap.SubscriptionRequest{ID: "sub-1", ExternalID: "ext-1"})
+				return err
+			},
+			wantPath: "/v1/subscription/stop",
+			wantBody: `{"id":"sub-1","external_id":"ext-1"}`,
+		},
+		{
+			name: "subscription history applies defaults",
+			call: func(c *tronzap.Client) error {
+				_, err := c.GetSubscriptionHistory(context.Background(), tronzap.SubscriptionHistoryRequest{})
+				return err
+			},
+			wantPath: "/v1/subscriptions/history",
+			wantBody: `{"page":1,"per_page":10}`,
+		},
+		{
+			name: "subscription history with filters",
+			call: func(c *tronzap.Client) error {
+				_, err := c.GetSubscriptionHistory(context.Background(), tronzap.SubscriptionHistoryRequest{
+					Page:    2,
+					PerPage: 50,
+					Status:  tronzap.SubscriptionStatusActive,
+				})
+				return err
+			},
+			wantPath: "/v1/subscriptions/history",
+			wantBody: `{"page":2,"per_page":50,"status":"active"}`,
+		},
+		{
 			name: "direct recharge info",
 			call: func(c *tronzap.Client) error {
 				_, err := c.GetDirectRechargeInfo(context.Background())
@@ -748,6 +833,169 @@ func TestGetAMLHistory(t *testing.T) {
 	}
 	if history.Items[0].RiskScore.Float64() != 64.3 {
 		t.Errorf("risk_score = %v, want 64.3", history.Items[0].RiskScore)
+	}
+}
+
+func TestGetSubscriptions(t *testing.T) {
+	client, _ := newServer(t, http.StatusOK, ok(`{
+		"unlimited_energy":{"id":8,"name":"Unlimited Energy","activation_fee":0,"initial_price":8,"price":2.8,"transactions_limit":0,"duration_days":0},
+		"energy_pack_100":{"id":2,"name":"Energy Pack 100","activation_fee":"2.0","initial_price":10,"price":5,"transactions_limit":10,"duration_days":5}
+	}`))
+
+	plans, err := client.GetSubscriptions(context.Background())
+	if err != nil {
+		t.Fatalf("GetSubscriptions: %v", err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("plans = %d, want 2", len(plans))
+	}
+	first := plans[0]
+	if first.SubscriptionID != "unlimited_energy" || first.ID != 8 || first.Name != "Unlimited Energy" {
+		t.Errorf("first plan = %+v", first)
+	}
+	if first.InitialPrice.Float64() != 8 || first.Price.Float64() != 2.8 || first.ActivationFee.Float64() != 0 {
+		t.Errorf("first plan prices = %+v", first)
+	}
+	second := plans[1]
+	if second.SubscriptionID != "energy_pack_100" || second.ActivationFee.Float64() != 2 {
+		t.Errorf("second plan = %+v", second)
+	}
+	if second.TransactionsLimit != 10 || second.DurationDays != 5 {
+		t.Errorf("second plan limits = %+v", second)
+	}
+}
+
+func TestGetSubscriptionsEmpty(t *testing.T) {
+	for _, result := range []string{`{}`, `[]`} {
+		client, _ := newServer(t, http.StatusOK, ok(result))
+
+		plans, err := client.GetSubscriptions(context.Background())
+		if err != nil {
+			t.Fatalf("GetSubscriptions with %s: %v", result, err)
+		}
+		if len(plans) != 0 {
+			t.Errorf("plans with %s = %+v, want none", result, plans)
+		}
+	}
+}
+
+func TestGetSubscriptionsRejectsUnexpectedResult(t *testing.T) {
+	client, _ := newServer(t, http.StatusOK, ok(`"unlimited_energy"`))
+
+	_, err := client.GetSubscriptions(context.Background())
+	if !errors.Is(err, tronzap.ErrInvalidResponse) {
+		t.Errorf("errors.Is(err, ErrInvalidResponse) = false for %v", err)
+	}
+}
+
+func TestStartSubscription(t *testing.T) {
+	client, _ := newServer(t, http.StatusOK, ok(`{
+		"id":"01m4e1z3q0r7x225zc6p63m5ey","subscription_id":"unlimited_energy",
+		"created_at":"2026-10-08T15:26:32+00:00","expire_at":"2026-11-07T15:26:32+00:00",
+		"address":"TAddress","status":"active","external_id":"sub-1",
+		"params":{"address":"TAddress","duration":30,"transactions_limit":0,"activate_address":false}
+	}`))
+
+	sub, err := client.StartSubscription(context.Background(), tronzap.StartSubscriptionRequest{
+		SubscriptionID: "unlimited_energy",
+		Address:        "TAddress",
+		DurationDays:   30,
+		ExternalID:     "sub-1",
+	})
+	if err != nil {
+		t.Fatalf("StartSubscription: %v", err)
+	}
+	if sub.ID != "01m4e1z3q0r7x225zc6p63m5ey" || sub.SubscriptionID != "unlimited_energy" || sub.ExternalID != "sub-1" {
+		t.Errorf("subscription = %+v", sub)
+	}
+	if sub.Status != tronzap.SubscriptionStatusActive || sub.Address != "TAddress" {
+		t.Errorf("subscription = %+v", sub)
+	}
+	if sub.Params.DurationDays != 30 || sub.Params.Address != "TAddress" || sub.Params.ActivateAddress {
+		t.Errorf("params = %+v", sub.Params)
+	}
+	if want := time.Date(2026, 11, 7, 15, 26, 32, 0, time.UTC); !sub.ExpireAt.Equal(want) {
+		t.Errorf("expire_at = %v, want %v", sub.ExpireAt, want)
+	}
+	if !sub.StoppedAt.IsZero() {
+		t.Errorf("stopped_at = %v, want zero", sub.StoppedAt)
+	}
+}
+
+// A stopped subscription is reported without its address and expiry date.
+func TestStopSubscription(t *testing.T) {
+	client, _ := newServer(t, http.StatusOK, ok(`{
+		"id":"01m4e1z3q0r7x225zc6p63m5ey","subscription_id":"unlimited_energy",
+		"created_at":"2026-10-08T15:26:32+00:00","stopped_at":"2026-10-08T15:28:44+00:00",
+		"status":"stopped","external_id":null,
+		"params":{"address":"TAddress","duration":30,"transactions_limit":0,"activate_address":false,"future_field":1}
+	}`))
+
+	sub, err := client.StopSubscription(context.Background(), tronzap.SubscriptionRequest{ID: "01m4e1z3q0r7x225zc6p63m5ey"})
+	if err != nil {
+		t.Fatalf("StopSubscription: %v", err)
+	}
+	if sub.Status != tronzap.SubscriptionStatusStopped || sub.ExternalID != "" {
+		t.Errorf("subscription = %+v", sub)
+	}
+	if sub.Address != "" || !sub.ExpireAt.IsZero() {
+		t.Errorf("address = %q, expire_at = %v, want both empty", sub.Address, sub.ExpireAt)
+	}
+	if want := time.Date(2026, 10, 8, 15, 28, 44, 0, time.UTC); !sub.StoppedAt.Equal(want) {
+		t.Errorf("stopped_at = %v, want %v", sub.StoppedAt, want)
+	}
+	if sub.Params.Address != "TAddress" {
+		t.Errorf("params = %+v", sub.Params)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(sub.Params.Raw, &raw); err != nil || raw["future_field"] != float64(1) {
+		t.Errorf("params raw = %s", sub.Params.Raw)
+	}
+}
+
+func TestGetSubscriptionHistory(t *testing.T) {
+	client, _ := newServer(t, http.StatusOK, ok(`{
+		"page":1,"per_page":10,"total":1,
+		"items":[{
+			"id":"01m4e1z3q0r7x225zc6p63m5ey","status":"active","subscription_id":"unlimited_energy",
+			"address":"TAddress","transactions_limit":0,"transactions_used":4,"energy_used":262000,
+			"total_price":13.6,"started_at":"2026-10-08T15:26:33+00:00","renewed_at":"2026-10-08T15:27:35+00:00",
+			"stopped_at":null,"expire_at":"2026-11-07T15:26:32+00:00","created_at":"2026-10-08T15:26:32+00:00"
+		}]
+	}`))
+
+	history, err := client.GetSubscriptionHistory(context.Background(), tronzap.SubscriptionHistoryRequest{})
+	if err != nil {
+		t.Fatalf("GetSubscriptionHistory: %v", err)
+	}
+	if history.Total != 1 || history.Page != 1 || history.PerPage != 10 {
+		t.Errorf("history = %+v", history)
+	}
+	if len(history.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(history.Items))
+	}
+	item := history.Items[0]
+	if item.TransactionsUsed != 4 || item.EnergyUsed != 262000 || item.TotalPrice.Float64() != 13.6 {
+		t.Errorf("usage = %+v", item)
+	}
+	if want := time.Date(2026, 10, 8, 15, 27, 35, 0, time.UTC); !item.RenewedAt.Equal(want) {
+		t.Errorf("renewed_at = %v, want %v", item.RenewedAt, want)
+	}
+	if item.StartedAt.IsZero() || !item.StoppedAt.IsZero() {
+		t.Errorf("started_at = %v, stopped_at = %v", item.StartedAt, item.StoppedAt)
+	}
+}
+
+// The documentation shows total_price as a string.
+func TestSubscriptionHistoryDecodesStringPrice(t *testing.T) {
+	client, _ := newServer(t, http.StatusOK, ok(`{"page":1,"per_page":10,"total":1,"items":[{"id":"sub-1","total_price":"8.00"}]}`))
+
+	history, err := client.GetSubscriptionHistory(context.Background(), tronzap.SubscriptionHistoryRequest{})
+	if err != nil {
+		t.Fatalf("GetSubscriptionHistory: %v", err)
+	}
+	if history.Items[0].TotalPrice.Float64() != 8 {
+		t.Errorf("total_price = %v, want 8", history.Items[0].TotalPrice)
 	}
 }
 
@@ -1257,6 +1505,56 @@ func TestInvalidRequests(t *testing.T) {
 				return err
 			},
 		},
+		{
+			name: "start subscription without a plan",
+			call: func() error {
+				_, err := client.StartSubscription(context.Background(), tronzap.StartSubscriptionRequest{Address: "T1"})
+				return err
+			},
+		},
+		{
+			name: "start subscription without an address",
+			call: func() error {
+				_, err := client.StartSubscription(context.Background(), tronzap.StartSubscriptionRequest{SubscriptionID: "unlimited_energy"})
+				return err
+			},
+		},
+		{
+			name: "start subscription with a negative duration",
+			call: func() error {
+				_, err := client.StartSubscription(context.Background(), tronzap.StartSubscriptionRequest{
+					SubscriptionID: "unlimited_energy",
+					Address:        "T1",
+					DurationDays:   -1,
+				})
+				return err
+			},
+		},
+		{
+			name: "start subscription with a negative transactions limit",
+			call: func() error {
+				_, err := client.StartSubscription(context.Background(), tronzap.StartSubscriptionRequest{
+					SubscriptionID:    "unlimited_energy",
+					Address:           "T1",
+					TransactionsLimit: -1,
+				})
+				return err
+			},
+		},
+		{
+			name: "check subscription without identifiers",
+			call: func() error {
+				_, err := client.CheckSubscription(context.Background(), tronzap.SubscriptionRequest{})
+				return err
+			},
+		},
+		{
+			name: "stop subscription without identifiers",
+			call: func() error {
+				_, err := client.StopSubscription(context.Background(), tronzap.SubscriptionRequest{})
+				return err
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1458,22 +1756,22 @@ func TestWithBaseURL(t *testing.T) {
 
 func TestDo(t *testing.T) {
 	t.Run("decodes into a caller-supplied value", func(t *testing.T) {
-		client, got := newServer(t, http.StatusOK, ok(`{"subscriptions":[{"id":"sub-1"}]}`))
+		client, got := newServer(t, http.StatusOK, ok(`{"items":[{"id":"item-1"}]}`))
 
 		var result struct {
-			Subscriptions []struct {
+			Items []struct {
 				ID string `json:"id"`
-			} `json:"subscriptions"`
+			} `json:"items"`
 		}
 		params := map[string]any{"page": 1}
-		if err := client.Do(context.Background(), "/v1/subscriptions", params, &result); err != nil {
+		if err := client.Do(context.Background(), "/v1/future-endpoint", params, &result); err != nil {
 			t.Fatalf("Do: %v", err)
 		}
-		if got.Path() != "/v1/subscriptions" {
+		if got.Path() != "/v1/future-endpoint" {
 			t.Errorf("path = %q", got.Path())
 		}
 		assertJSONBody(t, got.Body(), `{"page":1}`)
-		if len(result.Subscriptions) != 1 || result.Subscriptions[0].ID != "sub-1" {
+		if len(result.Items) != 1 || result.Items[0].ID != "item-1" {
 			t.Errorf("result = %+v", result)
 		}
 	})

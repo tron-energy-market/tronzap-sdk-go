@@ -146,12 +146,19 @@ services, err := client.GetServices(ctx)
 | `CreateAMLCheck(ctx, req)` | `/v1/aml-checks/new` | Создание AML-проверки |
 | `CheckAMLStatus(ctx, id)` | `/v1/aml-checks/check` | Статус и результат AML-проверки |
 | `GetAMLHistory(ctx, req)` | `/v1/aml-checks/history` | История AML-проверок с пагинацией |
+| `GetSubscriptions(ctx)` | `/v1/subscriptions` | Планы подписок и цены |
+| `StartSubscription(ctx, req)` | `/v1/subscription/start` | Подписать адрес на план |
+| `CheckSubscription(ctx, req)` | `/v1/subscription/check` | Статус подписки по id или внешнему id |
+| `StopSubscription(ctx, req)` | `/v1/subscription/stop` | Остановить подписку |
+| `GetSubscriptionHistory(ctx, req)` | `/v1/subscriptions/history` | История подписок с пагинацией |
 | `Do(ctx, endpoint, params, result)` | любой | Прямой доступ к ещё не обёрнутым endpoint'ам |
 
 Опциональные поля вынесены в структуры запросов, а не в длинные списки
 параметров, поэтому новые поля API можно добавлять, не ломая ваш код. Нулевые
 значения означают «использовать значение API по умолчанию»: `Duration`
-становится 1 час, а пагинация истории AML — страница 1 по 10 элементов.
+становится 1 час, а пагинация истории AML и подписок — страница 1 по 10
+элементов. Исключение — `StartSubscriptionRequest`: нулевые `DurationDays` и
+`TransactionsLimit` означают отсутствие ограничения.
 
 ### Покупка ресурсов
 
@@ -235,6 +242,44 @@ if result.Status == tronzap.AMLStatusCompleted {
 `RiskScore` — это `*Number`, потому что API оставляет его null до завершения
 проверки; перед чтением проверяйте на nil.
 
+### Подписки
+
+Подписка обеспечивает адрес энергией для каждой транзакции, пока её не
+остановят или не закончатся её дни или транзакции. Выберите план из
+`GetSubscriptions` и передайте его `SubscriptionID`, например
+`"unlimited_energy"`, а не числовой `ID`:
+
+```go
+plans, err := client.GetSubscriptions(ctx)
+if err != nil {
+	return err
+}
+for _, plan := range plans {
+	fmt.Println(plan.SubscriptionID, plan.InitialPrice, plan.Price)
+}
+
+sub, err := client.StartSubscription(ctx, tronzap.StartSubscriptionRequest{
+	SubscriptionID:    "unlimited_energy",
+	Address:           "TRecipientAddress",
+	DurationDays:      30, // 0 — без ограничения по времени
+	TransactionsLimit: 0,  // 0 — без ограничения
+	ExternalID:        "subscription-42",
+})
+
+sub, err = client.CheckSubscription(ctx, tronzap.SubscriptionRequest{ExternalID: "subscription-42"})
+
+sub, err = client.StopSubscription(ctx, tronzap.SubscriptionRequest{ID: sub.ID})
+
+history, err := client.GetSubscriptionHistory(ctx, tronzap.SubscriptionHistoryRequest{
+	Status: tronzap.SubscriptionStatusActive,
+})
+```
+
+Запуск, проверка и остановка возвращают подписку с её `Params`, а история
+вместо них — счётчики использования `TransactionsUsed`, `EnergyUsed` и
+`TotalPrice`. Подписку с лимитом транзакций остановить нельзя
+(`CodeCannotStopSubscription`).
+
 ## Обработка ошибок
 
 Любой сбой — это обычная ошибка Go. Детали несут четыре конкретных типа, и каждый
@@ -301,11 +346,11 @@ if errors.Is(err, context.DeadlineExceeded) { /* истёк дедлайн */ }
 | 2 | `CodeInvalidServiceOrParams` | Некорректный сервис или параметры |
 | 5 | `CodeWalletNotFound` | Внутренний кошелёк не найден. Обратитесь в поддержку. |
 | 6 | `CodeInsufficientFunds` | Недостаточно средств |
-| 10 | `CodeInvalidTronAddress` | Некорректный адрес TRON |
+| 10 | `CodeInvalidTronAddress` | Некорректный адрес TRON, или у адреса уже есть активная подписка |
 | 11 | `CodeInvalidEnergyAmount` | Некорректное количество энергии |
 | 12 | `CodeInvalidDuration` | Некорректная длительность |
 | 20 | `CodeTransactionNotFound` | Транзакция/подписка не найдена |
-| 21 | `CodeCannotStopSubscription` | Невозможно остановить подписку |
+| 21 | `CodeCannotStopSubscription` | Невозможно остановить подписку, например, у неё есть лимит транзакций |
 | 24 | `CodeAddressNotActivated` | Адрес не активирован |
 | 25 | `CodeAddressAlreadyActivated` | Адрес уже активирован |
 | 30 | `CodeAMLCheckNotFound` | AML-проверка не найдена |
@@ -335,7 +380,7 @@ var result struct {
 		Status string `json:"status"`
 	} `json:"items"`
 }
-err := client.Do(ctx, "/v1/subscriptions/history", map[string]any{"page": 1}, &result)
+err := client.Do(ctx, "/v1/new-endpoint", map[string]any{"page": 1}, &result)
 ```
 
 ## Тестирование

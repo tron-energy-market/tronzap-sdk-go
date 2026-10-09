@@ -133,6 +133,38 @@ func ExampleClient_CreateAMLCheck() {
 	}
 }
 
+// A subscription keeps an address supplied with energy until it is stopped or
+// runs out of days or transactions.
+func ExampleClient_StartSubscription() {
+	client := tronzap.NewClient("your_api_token", "your_api_secret")
+	ctx := context.Background()
+
+	plans, err := client.GetSubscriptions(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, plan := range plans {
+		fmt.Printf("%s: %s up front, %s per transaction\n", plan.SubscriptionID, plan.InitialPrice, plan.Price)
+	}
+
+	sub, err := client.StartSubscription(ctx, tronzap.StartSubscriptionRequest{
+		SubscriptionID: "unlimited_energy",
+		Address:        "TRecipientAddress",
+		DurationDays:   30,
+		ExternalID:     "subscription-42",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("subscription %s is %s until %s\n", sub.ID, sub.Status, sub.ExpireAt.Format(time.DateOnly))
+
+	stopped, err := client.StopSubscription(ctx, tronzap.SubscriptionRequest{ExternalID: "subscription-42"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(stopped.Status)
+}
+
 // Errors carry enough structure to decide whether to fix the request, top up the
 // account, or retry.
 func ExampleAPIError() {
@@ -182,7 +214,7 @@ func ExampleClient_Do() {
 		} `json:"items"`
 	}
 	params := map[string]any{"page": 1, "per_page": 10}
-	if err := client.Do(context.Background(), "/v1/subscriptions/history", params, &result); err != nil {
+	if err := client.Do(context.Background(), "/v1/new-endpoint", params, &result); err != nil {
 		log.Fatal(err)
 	}
 	for _, item := range result.Items {

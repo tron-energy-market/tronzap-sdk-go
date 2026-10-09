@@ -145,12 +145,18 @@ services, err := client.GetServices(ctx)
 | `CreateAMLCheck(ctx, req)` | `/v1/aml-checks/new` | Start an AML screening |
 | `CheckAMLStatus(ctx, id)` | `/v1/aml-checks/check` | Status and result of an AML check |
 | `GetAMLHistory(ctx, req)` | `/v1/aml-checks/history` | Paginated AML check history |
+| `GetSubscriptions(ctx)` | `/v1/subscriptions` | Subscription plans and prices |
+| `StartSubscription(ctx, req)` | `/v1/subscription/start` | Subscribe an address to a plan |
+| `CheckSubscription(ctx, req)` | `/v1/subscription/check` | Status of a subscription, by id or external id |
+| `StopSubscription(ctx, req)` | `/v1/subscription/stop` | Stop a subscription |
+| `GetSubscriptionHistory(ctx, req)` | `/v1/subscriptions/history` | Paginated subscription history |
 | `Do(ctx, endpoint, params, result)` | any | Escape hatch for endpoints not wrapped yet |
 
 Optional fields live in request structs rather than in long parameter lists, so
 new API fields can be added without breaking your code. Zero values mean "use the
-API default": `Duration` becomes 1 hour, and AML history paging defaults to page 1
-with 10 items.
+API default": `Duration` becomes 1 hour, and AML and subscription history paging
+defaults to page 1 with 10 items. The exception is `StartSubscriptionRequest`, where
+a zero `DurationDays` or `TransactionsLimit` means no limit.
 
 ### Buying resources
 
@@ -234,6 +240,44 @@ if result.Status == tronzap.AMLStatusCompleted {
 `RiskScore` is a `*Number` because the API leaves it null until screening
 finishes; check for nil before reading it.
 
+### Subscriptions
+
+A subscription keeps an address supplied with energy for every transaction until
+it is stopped or runs out of days or transactions. Pick a plan from
+`GetSubscriptions` and pass its `SubscriptionID`, such as `"unlimited_energy"`,
+not its numeric `ID`:
+
+```go
+plans, err := client.GetSubscriptions(ctx)
+if err != nil {
+	return err
+}
+for _, plan := range plans {
+	fmt.Println(plan.SubscriptionID, plan.InitialPrice, plan.Price)
+}
+
+sub, err := client.StartSubscription(ctx, tronzap.StartSubscriptionRequest{
+	SubscriptionID:    "unlimited_energy",
+	Address:           "TRecipientAddress",
+	DurationDays:      30, // 0 for no time limit
+	TransactionsLimit: 0,  // 0 for no limit
+	ExternalID:        "subscription-42",
+})
+
+sub, err = client.CheckSubscription(ctx, tronzap.SubscriptionRequest{ExternalID: "subscription-42"})
+
+sub, err = client.StopSubscription(ctx, tronzap.SubscriptionRequest{ID: sub.ID})
+
+history, err := client.GetSubscriptionHistory(ctx, tronzap.SubscriptionHistoryRequest{
+	Status: tronzap.SubscriptionStatusActive,
+})
+```
+
+Start, check and stop return the subscription with its `Params`; the history
+returns the usage counters `TransactionsUsed`, `EnergyUsed` and `TotalPrice`
+instead. A subscription with a transactions limit cannot be stopped
+(`CodeCannotStopSubscription`).
+
 ## Error handling
 
 Every failure is a plain Go `error`. Four concrete types carry the details, and
@@ -299,11 +343,11 @@ a non-zero code is always reported as `*APIError`, never as `*HTTPError`.
 | 2 | `CodeInvalidServiceOrParams` | Invalid service or parameters |
 | 5 | `CodeWalletNotFound` | Internal wallet not found. Contact support. |
 | 6 | `CodeInsufficientFunds` | Insufficient funds |
-| 10 | `CodeInvalidTronAddress` | Invalid TRON address |
+| 10 | `CodeInvalidTronAddress` | Invalid TRON address, or the address already has an active subscription |
 | 11 | `CodeInvalidEnergyAmount` | Invalid energy amount |
 | 12 | `CodeInvalidDuration` | Invalid duration |
 | 20 | `CodeTransactionNotFound` | Transaction/subscription not found |
-| 21 | `CodeCannotStopSubscription` | Cannot stop subscription |
+| 21 | `CodeCannotStopSubscription` | Cannot stop subscription, e.g. it has a transactions limit |
 | 24 | `CodeAddressNotActivated` | Address not activated |
 | 25 | `CodeAddressAlreadyActivated` | Address already activated |
 | 30 | `CodeAMLCheckNotFound` | AML check not found |
@@ -332,7 +376,7 @@ var result struct {
 		Status string `json:"status"`
 	} `json:"items"`
 }
-err := client.Do(ctx, "/v1/subscriptions/history", map[string]any{"page": 1}, &result)
+err := client.Do(ctx, "/v1/new-endpoint", map[string]any{"page": 1}, &result)
 ```
 
 ## Testing

@@ -12,6 +12,7 @@
 //	export TRONZAP_TO_ADDRESS=TRON_ADDRESS       # optional, with FROM_ADDRESS
 //	export TRONZAP_TRANSACTION_ID=id             # optional
 //	export TRONZAP_AML_CHECK_ID=id               # optional
+//	export TRONZAP_SUBSCRIPTION_ID=id            # optional
 //	go run ./examples/basic
 //
 // Setting TRONZAP_ALLOW_PURCHASES=1 additionally exercises the endpoints that
@@ -20,6 +21,12 @@
 // also needs TRONZAP_ADDRESS.
 //
 //	export TRONZAP_ALLOW_PURCHASES=1
+//
+// Setting TRONZAP_SUBSCRIPTION_PLAN as well starts a subscription to that plan for
+// TRONZAP_ADDRESS and stops it straight away. Starting one charges the plan's
+// initial price.
+//
+//	export TRONZAP_SUBSCRIPTION_PLAN=unlimited_energy
 package main
 
 import (
@@ -88,6 +95,7 @@ func run(ctx context.Context, client *tronzap.Client) error {
 	step("balance", func() error { return showAccount(ctx, client) })
 	step("services", func() error { return showCatalogue(ctx, client) })
 	step("aml-checks/history", func() error { return showAMLHistory(ctx, client) })
+	step("subscriptions, subscriptions/history", func() error { return showSubscriptions(ctx, client) })
 
 	// The remaining calls need something to look at, so each is skipped unless its
 	// variable is set.
@@ -116,6 +124,12 @@ func run(ctx context.Context, client *tronzap.Client) error {
 		skipped("aml-checks/check", "TRONZAP_AML_CHECK_ID")
 	}
 
+	if id := os.Getenv("TRONZAP_SUBSCRIPTION_ID"); id != "" {
+		step("subscription/check", func() error { return showSubscription(ctx, client, id) })
+	} else {
+		skipped("subscription/check", "TRONZAP_SUBSCRIPTION_ID")
+	}
+
 	switch address := os.Getenv("TRONZAP_ADDRESS"); {
 	case !purchasesAllowed():
 		skipped("transaction/new and aml-checks/new, which spend funds", "TRONZAP_ALLOW_PURCHASES=1")
@@ -128,6 +142,11 @@ func run(ctx context.Context, client *tronzap.Client) error {
 		step("transaction/new bandwidth", func() error { return buyBandwidth(ctx, client, address) })
 		step("transaction/new resource_bundle", func() error { return buyResourceBundle(ctx, client, address) })
 		step("aml-checks/new", func() error { return createAMLCheck(ctx, client, address) })
+		if plan := os.Getenv("TRONZAP_SUBSCRIPTION_PLAN"); plan != "" {
+			step("subscription/start, subscription/stop", func() error { return trySubscription(ctx, client, plan, address) })
+		} else {
+			skipped("subscription/start and subscription/stop", "TRONZAP_SUBSCRIPTION_PLAN")
+		}
 	}
 
 	if len(failed) > 0 {
@@ -191,6 +210,42 @@ func showAMLHistory(ctx context.Context, client *tronzap.Client) error {
 	for _, check := range history.Items {
 		fmt.Printf("  %s %s %s risk=%s\n", check.ID, check.Type, check.Status, check.RiskLevel)
 	}
+	return nil
+}
+
+func showSubscriptions(ctx context.Context, client *tronzap.Client) error {
+	plans, err := client.GetSubscriptions(ctx)
+	if err != nil {
+		return fmt.Errorf("subscriptions: %w", err)
+	}
+	fmt.Println("\nSubscription plans:")
+	for _, plan := range plans {
+		fmt.Printf("  %s (%s): activation %s, initial %s, %s per transaction, limit %d transactions, %d days\n",
+			plan.SubscriptionID, plan.Name, plan.ActivationFee, plan.InitialPrice, plan.Price,
+			plan.TransactionsLimit, plan.DurationDays)
+	}
+
+	history, err := client.GetSubscriptionHistory(ctx, tronzap.SubscriptionHistoryRequest{PerPage: 3})
+	if err != nil {
+		return fmt.Errorf("subscription history: %w", err)
+	}
+	fmt.Printf("Subscription history: %d subscriptions total, %d on page %d\n",
+		history.Total, len(history.Items), history.Page)
+	for _, sub := range history.Items {
+		fmt.Printf("  %s %s %s used=%d energy=%d charged=%s expires=%s\n",
+			sub.ID, sub.SubscriptionID, sub.Status, sub.TransactionsUsed, sub.EnergyUsed,
+			sub.TotalPrice, timestamp(sub.ExpireAt))
+	}
+	return nil
+}
+
+func showSubscription(ctx context.Context, client *tronzap.Client, id string) error {
+	sub, err := client.CheckSubscription(ctx, tronzap.SubscriptionRequest{ID: id})
+	if err != nil {
+		return fmt.Errorf("check subscription: %w", err)
+	}
+	fmt.Printf("\nSubscription %s: plan=%s status=%s address=%s created=%s expires=%s\n",
+		sub.ID, sub.SubscriptionID, sub.Status, sub.Address, timestamp(sub.CreatedAt), timestamp(sub.ExpireAt))
 	return nil
 }
 
@@ -355,6 +410,30 @@ func createAMLCheck(ctx context.Context, client *tronzap.Client, address string)
 	}
 	fmt.Printf("\naml-checks/new: created %s status=%s\n", check.ID, check.Status)
 	return showAMLCheck(ctx, client, check.ID)
+}
+
+// trySubscription starts a one-day subscription and stops it, so the run leaves
+// nothing active that keeps charging the balance.
+func trySubscription(ctx context.Context, client *tronzap.Client, plan, address string) error {
+	sub, err := client.StartSubscription(ctx, tronzap.StartSubscriptionRequest{
+		SubscriptionID: plan,
+		Address:        address,
+		DurationDays:   1,
+		ExternalID:     externalID("subscription"),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nsubscription/start: %s status=%s expires=%s\n", sub.ID, sub.Status, timestamp(sub.ExpireAt))
+
+	checkErr := showSubscription(ctx, client, sub.ID)
+
+	stopped, err := client.StopSubscription(ctx, tronzap.SubscriptionRequest{ID: sub.ID})
+	if err != nil {
+		return errors.Join(checkErr, fmt.Errorf("stop subscription %s: %w", sub.ID, err))
+	}
+	fmt.Printf("subscription/stop: %s status=%s stopped=%s\n", stopped.ID, stopped.Status, timestamp(stopped.StoppedAt))
+	return checkErr
 }
 
 // confirm reads a freshly created transaction back, which checks that the id the

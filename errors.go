@@ -26,7 +26,8 @@ const (
 	CodeWalletNotFound = 5
 	// CodeInsufficientFunds means the account balance is too low for the request.
 	CodeInsufficientFunds = 6
-	// CodeInvalidTronAddress means a supplied TRON address is malformed.
+	// CodeInvalidTronAddress means a supplied TRON address is malformed, or that
+	// the address already has an active subscription.
 	CodeInvalidTronAddress = 10
 	// CodeInvalidEnergyAmount means the requested energy amount is out of range.
 	CodeInvalidEnergyAmount = 11
@@ -36,7 +37,8 @@ const (
 	// given id or external id. The API reports it under the key
 	// "subscription_not_found".
 	CodeTransactionNotFound = 20
-	// CodeCannotStopSubscription means the subscription cannot be stopped right now.
+	// CodeCannotStopSubscription means the subscription cannot be stopped, for
+	// example because it has a transactions limit.
 	CodeCannotStopSubscription = 21
 	// CodeAddressNotActivated means the address must be activated before use.
 	CodeAddressNotActivated = 24

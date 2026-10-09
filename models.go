@@ -33,6 +33,22 @@ const (
 	TransactionStatusFailed = "failed"
 )
 
+// Subscription statuses.
+const (
+	// SubscriptionStatusNew means the subscription was created but not started yet.
+	SubscriptionStatusNew = "new"
+	// SubscriptionStatusPending means the subscription is being started.
+	SubscriptionStatusPending = "pending"
+	// SubscriptionStatusError means the subscription could not be started.
+	SubscriptionStatusError = "error"
+	// SubscriptionStatusActive means the subscription is delegating energy.
+	SubscriptionStatusActive = "active"
+	// SubscriptionStatusStopped means the subscription was stopped.
+	SubscriptionStatusStopped = "stopped"
+	// SubscriptionStatusExpired means the subscription ran out of time or transactions.
+	SubscriptionStatusExpired = "expired"
+)
+
 // AML check types.
 const (
 	// AMLTypeAddress screens a wallet address.
@@ -254,7 +270,7 @@ type AMLCheckRequest struct {
 	// Network is the blockchain network code, for example "TRX", "BTC" or "ETH". Required.
 	Network string
 	// Address is the address to screen. For [AMLTypeHash] it is the recipient
-	// address of the transaction. Required.
+	// address of the transaction, where the funds were received. Required.
 	Address string
 	// Hash is the transaction hash. Required for [AMLTypeHash].
 	Hash string
@@ -270,6 +286,43 @@ type AMLHistoryRequest struct {
 	// PerPage is the page size, between 1 and 50. Defaults to 10 when zero.
 	PerPage int
 	// Status filters by check status, for example [AMLStatusCompleted]. Optional.
+	Status string
+}
+
+// StartSubscriptionRequest starts a subscription for an address.
+type StartSubscriptionRequest struct {
+	// SubscriptionID is the plan to subscribe to, the [SubscriptionPlan.SubscriptionID]
+	// returned by [Client.GetSubscriptions], such as "unlimited_energy". Required.
+	SubscriptionID string
+	// Address is the TRON address the subscription serves. Required.
+	Address string
+	// DurationDays is how many days the subscription runs, 0 for no time limit.
+	DurationDays int
+	// TransactionsLimit is how many transactions the subscription covers, 0 for no limit.
+	TransactionsLimit int64
+	// ExternalID is your own identifier for the subscription. Optional.
+	ExternalID string
+	// ActivateAddress additionally activates the address if it is not active yet.
+	ActivateAddress bool
+}
+
+// SubscriptionRequest looks up one subscription. Exactly one of the two
+// identifiers is enough; supplying neither is rejected before any request is
+// sent.
+type SubscriptionRequest struct {
+	// ID is the identifier the API assigned to the subscription.
+	ID string
+	// ExternalID is the identifier you supplied when starting the subscription.
+	ExternalID string
+}
+
+// SubscriptionHistoryRequest pages through your subscriptions.
+type SubscriptionHistoryRequest struct {
+	// Page is the 1-based page number. Defaults to 1 when zero.
+	Page int
+	// PerPage is the page size, between 1 and 50. Defaults to 10 when zero.
+	PerPage int
+	// Status filters by subscription status, for example [SubscriptionStatusActive]. Optional.
 	Status string
 }
 
@@ -530,4 +583,144 @@ type AMLHistory struct {
 	Total int `json:"total"`
 	// Items holds the checks on this page.
 	Items []AMLCheck `json:"items"`
+}
+
+// SubscriptionPlan is a subscription plan on sale.
+type SubscriptionPlan struct {
+	// SubscriptionID identifies the plan, such as "unlimited_energy". Pass it as
+	// [StartSubscriptionRequest.SubscriptionID].
+	SubscriptionID string `json:"-"`
+	// ID is the plan's numeric identifier.
+	ID int64 `json:"id"`
+	// Name is the human-readable plan name.
+	Name string `json:"name"`
+	// ActivationFee is the one-time fee charged when the subscription starts.
+	ActivationFee Number `json:"activation_fee"`
+	// InitialPrice is the amount charged when the subscription starts.
+	InitialPrice Number `json:"initial_price"`
+	// Price is the cost of each transaction the subscription serves.
+	Price Number `json:"price"`
+	// TransactionsLimit is how many transactions the plan covers, 0 for no limit.
+	TransactionsLimit int64 `json:"transactions_limit"`
+	// DurationDays is how many days the plan runs, 0 for no time limit.
+	DurationDays int `json:"duration_days"`
+}
+
+// subscriptionPlans decodes the plans object, keyed by plan identifier, into a
+// slice that keeps the API's order.
+type subscriptionPlans []SubscriptionPlan
+
+func (p *subscriptionPlans) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	plans := subscriptionPlans{}
+	switch token {
+	case json.Delim('['):
+		// An empty plan list can arrive as [], the JSON encoding of an empty PHP array.
+		for decoder.More() {
+			var plan SubscriptionPlan
+			if err := decoder.Decode(&plan); err != nil {
+				return err
+			}
+			plans = append(plans, plan)
+		}
+	case json.Delim('{'):
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			var plan SubscriptionPlan
+			if err := decoder.Decode(&plan); err != nil {
+				return err
+			}
+			plan.SubscriptionID, _ = key.(string)
+			plans = append(plans, plan)
+		}
+	default:
+		return fmt.Errorf("tronzap: cannot decode %s as subscription plans", data)
+	}
+	*p = plans
+	return nil
+}
+
+// Subscription is an energy subscription for an address.
+//
+// [Client.StartSubscription], [Client.CheckSubscription] and
+// [Client.StopSubscription] report the identifiers, status, dates and Params;
+// [Client.GetSubscriptionHistory] reports the usage counters and dates instead
+// of Params and ExternalID. Fields a response does not carry are left zero.
+type Subscription struct {
+	// ID is the identifier assigned by the API.
+	ID string `json:"id"`
+	// SubscriptionID is the plan the subscription belongs to, such as "unlimited_energy".
+	SubscriptionID string `json:"subscription_id"`
+	// ExternalID is the identifier you supplied, empty if you supplied none.
+	ExternalID string `json:"external_id"`
+	// Address is the TRON address the subscription serves.
+	Address string `json:"address"`
+	// Status is the current status, one of the SubscriptionStatus* constants.
+	Status string `json:"status"`
+	// Params echoes the parameters the subscription was started with.
+	Params SubscriptionParams `json:"params"`
+	// TransactionsLimit is how many transactions the subscription covers, 0 for no limit.
+	TransactionsLimit int64 `json:"transactions_limit"`
+	// TransactionsUsed is how many transactions the subscription has served.
+	TransactionsUsed int64 `json:"transactions_used"`
+	// EnergyUsed is how much energy the subscription has delegated.
+	EnergyUsed int64 `json:"energy_used"`
+	// TotalPrice is the amount charged for the subscription so far.
+	TotalPrice Number `json:"total_price"`
+	// CreatedAt is when the subscription was created.
+	CreatedAt Time `json:"created_at"`
+	// StartedAt is when the subscription started.
+	StartedAt Time `json:"started_at"`
+	// RenewedAt is when the subscription was last renewed, zero if never.
+	RenewedAt Time `json:"renewed_at"`
+	// StoppedAt is when the subscription was stopped, zero if it was not.
+	StoppedAt Time `json:"stopped_at"`
+	// ExpireAt is when the subscription ends, zero if it has no time limit.
+	ExpireAt Time `json:"expire_at"`
+}
+
+// SubscriptionParams echoes the parameters a subscription was started with. Raw
+// keeps the object verbatim.
+type SubscriptionParams struct {
+	// Address is the TRON address the subscription serves.
+	Address string `json:"address"`
+	// DurationDays is how many days the subscription runs, 0 for no time limit.
+	DurationDays int `json:"duration"`
+	// TransactionsLimit is how many transactions the subscription covers, 0 for no limit.
+	TransactionsLimit int64 `json:"transactions_limit"`
+	// ActivateAddress reports whether activation was requested.
+	ActivateAddress bool `json:"activate_address"`
+	// Raw is the params object exactly as the API returned it.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the known fields and keeps the original object in Raw.
+func (p *SubscriptionParams) UnmarshalJSON(data []byte) error {
+	type params SubscriptionParams
+	var decoded params
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*p = SubscriptionParams(decoded)
+	p.Raw = bytes.Clone(data)
+	return nil
+}
+
+// SubscriptionHistory is one page of your subscriptions.
+type SubscriptionHistory struct {
+	// Page is the 1-based number of this page.
+	Page int `json:"page"`
+	// PerPage is the page size.
+	PerPage int `json:"per_page"`
+	// Total is the number of subscriptions matching the query across all pages.
+	Total int `json:"total"`
+	// Items holds the subscriptions on this page.
+	Items []Subscription `json:"items"`
 }

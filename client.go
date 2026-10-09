@@ -84,6 +84,11 @@ const (
 	endpointAMLCheckNew        = "/v1/aml-checks/new"
 	endpointAMLCheckStatus     = "/v1/aml-checks/check"
 	endpointAMLHistory         = "/v1/aml-checks/history"
+	endpointSubscriptions      = "/v1/subscriptions"
+	endpointSubscriptionHist   = "/v1/subscriptions/history"
+	endpointSubscriptionStart  = "/v1/subscription/start"
+	endpointSubscriptionCheck  = "/v1/subscription/check"
+	endpointSubscriptionStop   = "/v1/subscription/stop"
 )
 
 // Client talks to the TronZap API. Create one with [NewClient] and share it: all
@@ -337,6 +342,69 @@ func (c *Client) GetAMLHistory(ctx context.Context, req AMLHistoryRequest) (*AML
 	}{Page: page, PerPage: perPage, Status: req.Status})
 }
 
+// GetSubscriptions returns the subscription plans on sale, in the order the API
+// lists them.
+func (c *Client) GetSubscriptions(ctx context.Context) ([]SubscriptionPlan, error) {
+	plans, err := fetch[subscriptionPlans](ctx, c, endpointSubscriptions, nil)
+	if err != nil {
+		return nil, err
+	}
+	return *plans, nil
+}
+
+// StartSubscription subscribes an address to a plan from [Client.GetSubscriptions].
+func (c *Client) StartSubscription(ctx context.Context, req StartSubscriptionRequest) (*Subscription, error) {
+	switch {
+	case req.SubscriptionID == "":
+		return nil, fmt.Errorf("%w: SubscriptionID is required", ErrInvalidRequest)
+	case req.Address == "":
+		return nil, fmt.Errorf("%w: Address is required", ErrInvalidRequest)
+	case req.DurationDays < 0:
+		return nil, fmt.Errorf("%w: DurationDays cannot be negative", ErrInvalidRequest)
+	case req.TransactionsLimit < 0:
+		return nil, fmt.Errorf("%w: TransactionsLimit cannot be negative", ErrInvalidRequest)
+	}
+	return fetch[Subscription](ctx, c, endpointSubscriptionStart, startSubscriptionParams{
+		SubscriptionID: req.SubscriptionID,
+		ExternalID:     req.ExternalID,
+		Params: subscriptionParams{
+			Address:           req.Address,
+			Duration:          req.DurationDays,
+			TransactionsLimit: req.TransactionsLimit,
+			ActivateAddress:   req.ActivateAddress,
+		},
+	})
+}
+
+// CheckSubscription returns the current state of a subscription. Look it up by
+// the API's identifier, by your own external identifier, or both.
+func (c *Client) CheckSubscription(ctx context.Context, req SubscriptionRequest) (*Subscription, error) {
+	return c.subscriptionByID(ctx, endpointSubscriptionCheck, req)
+}
+
+// StopSubscription stops a subscription. A subscription with a transactions
+// limit cannot be stopped and fails with [CodeCannotStopSubscription].
+func (c *Client) StopSubscription(ctx context.Context, req SubscriptionRequest) (*Subscription, error) {
+	return c.subscriptionByID(ctx, endpointSubscriptionStop, req)
+}
+
+// GetSubscriptionHistory returns one page of your subscriptions, newest first.
+func (c *Client) GetSubscriptionHistory(ctx context.Context, req SubscriptionHistoryRequest) (*SubscriptionHistory, error) {
+	page := req.Page
+	if page < 1 {
+		page = 1
+	}
+	perPage := req.PerPage
+	if perPage < 1 {
+		perPage = 10
+	}
+	return fetch[SubscriptionHistory](ctx, c, endpointSubscriptionHist, struct {
+		Page    int    `json:"page"`
+		PerPage int    `json:"per_page"`
+		Status  string `json:"status,omitempty"`
+	}{Page: page, PerPage: perPage, Status: req.Status})
+}
+
 // Do sends a signed POST request to an arbitrary API endpoint and decodes the
 // response's "result" field into result, which may be nil to discard it. Use it
 // to reach endpoints this SDK does not wrap yet; prefer the typed methods
@@ -402,6 +470,30 @@ type transactionParams struct {
 	Amounts         *Amounts `json:"amounts,omitempty"`
 	Duration        int      `json:"duration,omitempty"`
 	ActivateAddress bool     `json:"activate_address,omitempty"`
+}
+
+func (c *Client) subscriptionByID(ctx context.Context, endpoint string, req SubscriptionRequest) (*Subscription, error) {
+	if req.ID == "" && req.ExternalID == "" {
+		return nil, fmt.Errorf("%w: either ID or ExternalID is required", ErrInvalidRequest)
+	}
+	return fetch[Subscription](ctx, c, endpoint, struct {
+		ID         string `json:"id,omitempty"`
+		ExternalID string `json:"external_id,omitempty"`
+	}{ID: req.ID, ExternalID: req.ExternalID})
+}
+
+// startSubscriptionParams is the wire format of a /v1/subscription/start request.
+type startSubscriptionParams struct {
+	SubscriptionID string             `json:"subscription_id"`
+	ExternalID     string             `json:"external_id,omitempty"`
+	Params         subscriptionParams `json:"params"`
+}
+
+type subscriptionParams struct {
+	Address           string `json:"address"`
+	Duration          int    `json:"duration"`
+	TransactionsLimit int64  `json:"transactions_limit"`
+	ActivateAddress   bool   `json:"activate_address,omitempty"`
 }
 
 func fetch[T any](ctx context.Context, c *Client, endpoint string, params any) (*T, error) {

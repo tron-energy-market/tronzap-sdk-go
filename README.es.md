@@ -146,13 +146,20 @@ services, err := client.GetServices(ctx)
 | `CreateAMLCheck(ctx, req)` | `/v1/aml-checks/new` | Iniciar una verificación AML |
 | `CheckAMLStatus(ctx, id)` | `/v1/aml-checks/check` | Estado y resultado de una verificación AML |
 | `GetAMLHistory(ctx, req)` | `/v1/aml-checks/history` | Historial paginado de verificaciones AML |
+| `GetSubscriptions(ctx)` | `/v1/subscriptions` | Planes de suscripción y precios |
+| `StartSubscription(ctx, req)` | `/v1/subscription/start` | Suscribir una dirección a un plan |
+| `CheckSubscription(ctx, req)` | `/v1/subscription/check` | Estado de una suscripción, por id o id externo |
+| `StopSubscription(ctx, req)` | `/v1/subscription/stop` | Detener una suscripción |
+| `GetSubscriptionHistory(ctx, req)` | `/v1/subscriptions/history` | Historial paginado de suscripciones |
 | `Do(ctx, endpoint, params, result)` | cualquiera | Acceso directo a endpoints aún no cubiertos |
 
 Los campos opcionales viven en estructuras de petición en lugar de en largas
 listas de parámetros, de modo que se pueden añadir campos nuevos de la API sin
 romper su código. Los valores cero significan «usar el valor por defecto de la
-API»: `Duration` pasa a ser 1 hora y la paginación del historial AML usa la
-página 1 con 10 elementos.
+API»: `Duration` pasa a ser 1 hora y la paginación de los historiales AML y de
+suscripciones usa la página 1 con 10 elementos. La excepción es
+`StartSubscriptionRequest`, donde un `DurationDays` o `TransactionsLimit` igual a
+cero significa sin límite.
 
 ### Comprar recursos
 
@@ -236,6 +243,44 @@ if result.Status == tronzap.AMLStatusCompleted {
 `RiskScore` es un `*Number` porque la API lo deja en null hasta que termina la
 verificación; compruebe que no sea nil antes de leerlo.
 
+### Suscripciones
+
+Una suscripción mantiene una dirección abastecida de energía para cada transacción
+hasta que se detiene o se agotan sus días o transacciones. Elija un plan de
+`GetSubscriptions` y pase su `SubscriptionID`, como `"unlimited_energy"`, no su
+`ID` numérico:
+
+```go
+plans, err := client.GetSubscriptions(ctx)
+if err != nil {
+	return err
+}
+for _, plan := range plans {
+	fmt.Println(plan.SubscriptionID, plan.InitialPrice, plan.Price)
+}
+
+sub, err := client.StartSubscription(ctx, tronzap.StartSubscriptionRequest{
+	SubscriptionID:    "unlimited_energy",
+	Address:           "TRecipientAddress",
+	DurationDays:      30, // 0 para no limitar el tiempo
+	TransactionsLimit: 0,  // 0 para no limitar
+	ExternalID:        "subscription-42",
+})
+
+sub, err = client.CheckSubscription(ctx, tronzap.SubscriptionRequest{ExternalID: "subscription-42"})
+
+sub, err = client.StopSubscription(ctx, tronzap.SubscriptionRequest{ID: sub.ID})
+
+history, err := client.GetSubscriptionHistory(ctx, tronzap.SubscriptionHistoryRequest{
+	Status: tronzap.SubscriptionStatusActive,
+})
+```
+
+Iniciar, consultar y detener devuelven la suscripción con sus `Params`; el
+historial devuelve en su lugar los contadores de uso `TransactionsUsed`,
+`EnergyUsed` y `TotalPrice`. Una suscripción con límite de transacciones no se
+puede detener (`CodeCannotStopSubscription`).
+
 ## Gestión de errores
 
 Todo fallo es un `error` de Go corriente. Cuatro tipos concretos aportan los
@@ -303,11 +348,11 @@ nunca como `*HTTPError`.
 | 2 | `CodeInvalidServiceOrParams` | Servicio o parámetros no válidos |
 | 5 | `CodeWalletNotFound` | Monedero interno no encontrado. Contacte con soporte. |
 | 6 | `CodeInsufficientFunds` | Fondos insuficientes |
-| 10 | `CodeInvalidTronAddress` | Dirección TRON no válida |
+| 10 | `CodeInvalidTronAddress` | Dirección TRON no válida, o la dirección ya tiene una suscripción activa |
 | 11 | `CodeInvalidEnergyAmount` | Cantidad de energía no válida |
 | 12 | `CodeInvalidDuration` | Duración no válida |
 | 20 | `CodeTransactionNotFound` | Transacción/suscripción no encontrada |
-| 21 | `CodeCannotStopSubscription` | No se puede detener la suscripción |
+| 21 | `CodeCannotStopSubscription` | No se puede detener la suscripción, p. ej. tiene límite de transacciones |
 | 24 | `CodeAddressNotActivated` | Dirección no activada |
 | 25 | `CodeAddressAlreadyActivated` | Dirección ya activada |
 | 30 | `CodeAMLCheckNotFound` | Verificación AML no encontrada |
@@ -337,7 +382,7 @@ var result struct {
 		Status string `json:"status"`
 	} `json:"items"`
 }
-err := client.Do(ctx, "/v1/subscriptions/history", map[string]any{"page": 1}, &result)
+err := client.Do(ctx, "/v1/new-endpoint", map[string]any{"page": 1}, &result)
 ```
 
 ## Pruebas
