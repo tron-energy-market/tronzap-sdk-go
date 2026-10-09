@@ -238,6 +238,14 @@ if result.Status == tronzap.AMLStatusCompleted {
 }
 ```
 
+Em uma verificação por hash, `Address` é o endereço do destinatário da
+transação, onde os fundos foram recebidos, e `Direction` indica de que lado você
+está: `AMLDirectionDeposit` se os fundos chegaram ao seu endereço (`Address` é o
+seu endereço), `AMLDirectionWithdrawal` se foi você quem enviou (`Address` é o
+endereço do destinatário externo). O risco é calculado para a contraparte: o
+remetente em um deposit, o destinatário em um withdrawal. Se `Direction` estiver
+vazio, o SDK envia `AMLDirectionDeposit`.
+
 `RiskScore` é um `*Number` porque a API o deixa em null até a verificação
 terminar; verifique se não é nil antes de lê-lo.
 

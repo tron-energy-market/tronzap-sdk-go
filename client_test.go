@@ -391,6 +391,20 @@ func TestRequestBodies(t *testing.T) {
 			wantBody: `{"type":"hash","network":"BTC","address":"bc1address","hash":"E3F2","direction":"withdrawal"}`,
 		},
 		{
+			name: "aml check for a hash defaults to deposit",
+			call: func(c *tronzap.Client) error {
+				_, err := c.CreateAMLCheck(context.Background(), tronzap.AMLCheckRequest{
+					Type:    tronzap.AMLTypeHash,
+					Network: "TRX",
+					Address: "TAddress",
+					Hash:    "E3F2",
+				})
+				return err
+			},
+			wantPath: "/v1/aml-checks/new",
+			wantBody: `{"type":"hash","network":"TRX","address":"TAddress","hash":"E3F2","direction":"deposit"}`,
+		},
+		{
 			name: "aml status",
 			call: func(c *tronzap.Client) error {
 				_, err := c.CheckAMLStatus(context.Background(), "aml-1")

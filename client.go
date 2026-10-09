@@ -289,7 +289,8 @@ func (c *Client) GetAMLServices(ctx context.Context) ([]AMLService, error) {
 
 // CreateAMLCheck starts an AML screening of an address or a transaction hash.
 // Screening runs asynchronously: poll [Client.CheckAMLStatus] until the status is
-// [AMLStatusCompleted].
+// [AMLStatusCompleted]. A hash check without a Direction is sent as
+// [AMLDirectionDeposit].
 func (c *Client) CreateAMLCheck(ctx context.Context, req AMLCheckRequest) (*AMLCheck, error) {
 	switch {
 	case req.Type == "":
@@ -298,6 +299,10 @@ func (c *Client) CreateAMLCheck(ctx context.Context, req AMLCheckRequest) (*AMLC
 		return nil, fmt.Errorf("%w: Network is required", ErrInvalidRequest)
 	case req.Address == "":
 		return nil, fmt.Errorf("%w: Address is required", ErrInvalidRequest)
+	}
+	direction := req.Direction
+	if req.Type == AMLTypeHash && direction == "" {
+		direction = AMLDirectionDeposit
 	}
 	return fetch[AMLCheck](ctx, c, endpointAMLCheckNew, struct {
 		Type      string `json:"type"`
@@ -310,7 +315,7 @@ func (c *Client) CreateAMLCheck(ctx context.Context, req AMLCheckRequest) (*AMLC
 		Network:   req.Network,
 		Address:   req.Address,
 		Hash:      req.Hash,
-		Direction: req.Direction,
+		Direction: direction,
 	})
 }
 

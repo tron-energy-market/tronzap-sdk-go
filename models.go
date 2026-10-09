@@ -57,11 +57,15 @@ const (
 	AMLTypeHash = "hash"
 )
 
-// AML transaction directions, used with [AMLTypeHash].
+// AML transaction directions, used with [AMLTypeHash]. The direction says which
+// side of the transaction you are on; the risk is scored for the counterparty.
 const (
-	// AMLDirectionDeposit screens an incoming transaction. This is the API default.
+	// AMLDirectionDeposit means the funds were sent to your address, so the
+	// request Address is your address and the sender is scored. The SDK sends it
+	// when a hash check has no Direction.
 	AMLDirectionDeposit = "deposit"
-	// AMLDirectionWithdrawal screens an outgoing transaction.
+	// AMLDirectionWithdrawal means you sent the funds, so the request Address is
+	// the external recipient's address and the recipient is scored.
 	AMLDirectionWithdrawal = "withdrawal"
 )
 
@@ -274,8 +278,10 @@ type AMLCheckRequest struct {
 	Address string
 	// Hash is the transaction hash. Required for [AMLTypeHash].
 	Hash string
-	// Direction is [AMLDirectionDeposit] or [AMLDirectionWithdrawal], used with
-	// [AMLTypeHash]. The API defaults to deposit.
+	// Direction says which side of an [AMLTypeHash] transaction you are on:
+	// [AMLDirectionDeposit] if the funds were sent to your address,
+	// [AMLDirectionWithdrawal] if you sent them. The risk is scored for the
+	// counterparty. When empty, a hash check sends [AMLDirectionDeposit].
 	Direction string
 }
 
@@ -539,7 +545,8 @@ type AMLCheck struct {
 	ID string `json:"id"`
 	// Type is [AMLTypeAddress] or [AMLTypeHash].
 	Type string `json:"type"`
-	// Address is the screened address.
+	// Address is the screened address; for a hash check, the recipient address
+	// of the transaction.
 	Address string `json:"address"`
 	// Hash is the screened transaction hash, empty for address checks.
 	Hash string `json:"hash"`
