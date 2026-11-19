@@ -46,12 +46,15 @@ package tronzap
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -89,6 +92,11 @@ const (
 	endpointSubscriptionStart  = "/v1/subscription/start"
 	endpointSubscriptionCheck  = "/v1/subscription/check"
 	endpointSubscriptionStop   = "/v1/subscription/stop"
+	endpointBulkCalculate      = "/v1/bulk/calculate"
+	endpointBulkCreate         = "/v1/bulk/create"
+	endpointBulkCheck          = "/v1/bulk/check"
+	endpointBulkHistory        = "/v1/bulk/history"
+	endpointBulkReport         = "/v1/bulk/report"
 )
 
 // Client talks to the TronZap API. Create one with [NewClient] and share it: all
@@ -410,6 +418,110 @@ func (c *Client) GetSubscriptionHistory(ctx context.Context, req SubscriptionHis
 	}{Page: page, PerPage: perPage, Status: req.Status})
 }
 
+// BulkCalculate validates and prices the rows of a bulk energy order. It creates
+// a calculation valid for 10 minutes; nothing is charged. Invalid rows do not
+// fail the request: they are returned in [BulkCalculation.Rejected] with their
+// row number, starting at 1. When no row is valid, the API answers
+// [CodeBulkNoValidItems] and the rejected rows are in the error's result.
+func (c *Client) BulkCalculate(ctx context.Context, req BulkCalculateRequest) (*BulkCalculation, error) {
+	if len(req.Items) == 0 {
+		return nil, fmt.Errorf("%w: Items is required", ErrInvalidRequest)
+	}
+	return fetch[BulkCalculation](ctx, c, endpointBulkCalculate, struct {
+		Resource string     `json:"resource"`
+		Duration int        `json:"duration"`
+		Items    []BulkItem `json:"items"`
+	}{
+		Resource: ServiceEnergy,
+		Duration: durationOrDefault(req.Duration),
+		Items:    req.Items,
+	})
+}
+
+// BulkCreate starts a bulk order from a calculation. Nothing is charged here:
+// each address is charged when it is processed. If the price of any row changed
+// since the calculation, the order is not started: the API answers
+// [CodeBulkPriceChanged] and the new calculation is in the error's result; start
+// the order with its ID. Repeating a call with the same ID or ExternalID returns
+// the order already started.
+func (c *Client) BulkCreate(ctx context.Context, req BulkCreateRequest) (*BulkOrder, error) {
+	if req.ID == "" {
+		return nil, fmt.Errorf("%w: ID is required", ErrInvalidRequest)
+	}
+	return fetch[BulkOrder](ctx, c, endpointBulkCreate, struct {
+		ID               string `json:"id"`
+		Force            bool   `json:"force,omitempty"`
+		MaxPriceIncrease *int   `json:"max_price_increase,omitempty"`
+		WebhookURL       string `json:"webhook_url,omitempty"`
+		ExternalID       string `json:"external_id,omitempty"`
+	}{
+		ID:               req.ID,
+		Force:            req.Force,
+		MaxPriceIncrease: req.MaxPriceIncrease,
+		WebhookURL:       req.WebhookURL,
+		ExternalID:       req.ExternalID,
+	})
+}
+
+// BulkCheck returns the status and progress counters of a bulk order. Look it
+// up by the API's identifier, by your own external identifier, or both.
+func (c *Client) BulkCheck(ctx context.Context, req BulkOrderRequest) (*BulkOrder, error) {
+	if req.ID == "" && req.ExternalID == "" {
+		return nil, fmt.Errorf("%w: either ID or ExternalID is required", ErrInvalidRequest)
+	}
+	return fetch[BulkOrder](ctx, c, endpointBulkCheck, bulkOrderParams{ID: req.ID, ExternalID: req.ExternalID})
+}
+
+// BulkHistory returns one page of your bulk orders, newest first.
+func (c *Client) BulkHistory(ctx context.Context, req BulkHistoryRequest) (*BulkHistory, error) {
+	page := req.Page
+	if page < 1 {
+		page = 1
+	}
+	perPage := req.PerPage
+	if perPage < 1 {
+		perPage = 10
+	}
+	return fetch[BulkHistory](ctx, c, endpointBulkHistory, struct {
+		Page    int `json:"page"`
+		PerPage int `json:"per_page"`
+	}{Page: page, PerPage: perPage})
+}
+
+// BulkReport downloads the per-address report of a bulk order as CSV with a
+// header line. The columns are row, address, amount, status, reason, charged
+// and transaction_id; rows rejected by the calculation are not included.
+func (c *Client) BulkReport(ctx context.Context, req BulkReportRequest) (string, error) {
+	if req.ID == "" && req.ExternalID == "" {
+		return "", fmt.Errorf("%w: either ID or ExternalID is required", ErrInvalidRequest)
+	}
+	resp, err := c.send(ctx, endpointBulkReport, bulkOrderParams(req))
+	if err != nil {
+		return "", err
+	}
+
+	contentType := strings.ToLower(resp.header.Get("Content-Type"))
+	if resp.statusCode >= 200 && resp.statusCode < 300 && strings.HasPrefix(contentType, "text/csv") {
+		return string(resp.body), nil
+	}
+	if err := decodeResponse(resp, nil); err != nil {
+		return "", err
+	}
+	return "", &InvalidResponseError{
+		StatusCode: resp.statusCode,
+		Message:    "expected a CSV report",
+		Body:       string(resp.body),
+	}
+}
+
+// VerifyWebhookSignature checks the X-Signature header of a bulk order webhook.
+// Pass the raw request body exactly as received. The body is a JSON object with
+// the order's id, external_id and status, which decodes into a [BulkOrder].
+func (c *Client) VerifyWebhookSignature(body []byte, signature string) bool {
+	expected := c.sign(body)
+	return hmac.Equal([]byte(expected), []byte(strings.ToLower(strings.TrimSpace(signature))))
+}
+
 // Do sends a signed POST request to an arbitrary API endpoint and decodes the
 // response's "result" field into result, which may be nil to discard it. Use it
 // to reach endpoints this SDK does not wrap yet; prefer the typed methods
@@ -418,18 +530,33 @@ func (c *Client) GetSubscriptionHistory(ctx context.Context, req SubscriptionHis
 // The endpoint is a path such as "/v1/balance". A nil params encodes as an empty
 // JSON object.
 func (c *Client) Do(ctx context.Context, endpoint string, params, result any) error {
+	resp, err := c.send(ctx, endpoint, params)
+	if err != nil {
+		return err
+	}
+	return decodeResponse(resp, result)
+}
+
+// response is a reply read in full.
+type response struct {
+	statusCode int
+	header     http.Header
+	body       []byte
+}
+
+func (c *Client) send(ctx context.Context, endpoint string, params any) (*response, error) {
 	body := []byte("{}")
 	if params != nil {
 		encoded, err := json.Marshal(params)
 		if err != nil {
-			return fmt.Errorf("%w: cannot encode params: %w", ErrInvalidRequest, err)
+			return nil, fmt.Errorf("%w: cannot encode params: %w", ErrInvalidRequest, err)
 		}
 		body = encoded
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+endpoint, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiToken)
 	req.Header.Set("X-Signature", c.sign(body))
@@ -439,15 +566,15 @@ func (c *Client) Do(ctx context.Context, endpoint string, params, result any) er
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return newNetworkError(err)
+		return nil, newNetworkError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return newNetworkError(err)
+		return nil, newNetworkError(err)
 	}
-	return decodeResponse(resp.StatusCode, raw, result)
+	return &response{statusCode: resp.StatusCode, header: resp.Header, body: raw}, nil
 }
 
 // sign returns the request signature: the hex-encoded SHA-256 of the request
@@ -494,6 +621,12 @@ type startSubscriptionParams struct {
 	Params         subscriptionParams `json:"params"`
 }
 
+type bulkOrderParams struct {
+	ID         string `json:"id,omitempty"`
+	ExternalID string `json:"external_id,omitempty"`
+	Status     string `json:"status,omitempty"`
+}
+
 type subscriptionParams struct {
 	Address           string `json:"address"`
 	Duration          int    `json:"duration"`
@@ -514,13 +647,15 @@ func fetch[T any](ctx context.Context, c *Client, endpoint string, params any) (
 // The order of checks matters: the API reports some application-level failures
 // with a 2xx status and others with a 4xx status, so a decodable payload with a
 // non-zero code always wins over the HTTP status.
-func decodeResponse(statusCode int, raw []byte, result any) error {
+func decodeResponse(resp *response, result any) error {
+	statusCode, raw := resp.statusCode, resp.body
 	var envelope struct {
-		Code      *int            `json:"code"`
-		Error     string          `json:"error"`
-		Key       string          `json:"key"`
-		RequestID string          `json:"request_id"`
-		Result    json.RawMessage `json:"result"`
+		Code       *int            `json:"code"`
+		Error      string          `json:"error"`
+		Key        string          `json:"key"`
+		RequestID  string          `json:"request_id"`
+		Result     json.RawMessage `json:"result"`
+		RetryAfter json.RawMessage `json:"retry_after"`
 	}
 	decodeErr := json.Unmarshal(raw, &envelope)
 
@@ -534,12 +669,18 @@ func decodeResponse(statusCode int, raw []byte, result any) error {
 		if message == "" {
 			message = "Unknown API error"
 		}
+		var errorResult json.RawMessage
+		if len(envelope.Result) > 0 && !bytes.Equal(envelope.Result, []byte("null")) {
+			errorResult = envelope.Result
+		}
 		return &APIError{
 			Code:       code,
 			Message:    message,
 			Key:        envelope.Key,
 			RequestID:  envelope.RequestID,
 			StatusCode: statusCode,
+			Result:     errorResult,
+			RetryAfter: retryAfter(resp.header, envelope.RetryAfter),
 		}
 	case decodeErr != nil && json.Valid(raw):
 		// Well-formed JSON that is not an object cannot carry a code, which the
@@ -548,7 +689,9 @@ func decodeResponse(statusCode int, raw []byte, result any) error {
 	}
 
 	if statusCode < 200 || statusCode >= 300 {
-		return newHTTPError(statusCode, string(raw))
+		httpErr := newHTTPError(statusCode, string(raw))
+		httpErr.RetryAfter = retryAfter(resp.header, nil)
+		return httpErr
 	}
 	if decodeErr != nil {
 		return &InvalidResponseError{
@@ -590,6 +733,44 @@ func newHTTPError(statusCode int, body string) *HTTPError {
 		message = "server error"
 	}
 	return &HTTPError{StatusCode: statusCode, Message: message, Body: body}
+}
+
+// retryAfter reads the Retry-After header, as seconds or an HTTP date, and
+// falls back to the "retry_after" field of the body. It is zero when neither
+// holds a usable value.
+func retryAfter(header http.Header, field json.RawMessage) time.Duration {
+	if value := strings.TrimSpace(header.Get("Retry-After")); value != "" {
+		if seconds, ok := parseSeconds(value); ok {
+			return seconds
+		}
+		if when, err := http.ParseTime(value); err == nil {
+			wait := time.Until(when)
+			if wait <= 0 {
+				return 0
+			}
+			return (wait + time.Second - 1).Truncate(time.Second)
+		}
+	}
+	if seconds, ok := parseSeconds(string(field)); ok {
+		return seconds
+	}
+	return 0
+}
+
+func parseSeconds(value string) (time.Duration, bool) {
+	if value == "" {
+		return 0, false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || seconds > math.MaxInt64/int64(time.Second) {
+		return 0, false
+	}
+	return time.Duration(seconds) * time.Second, true
 }
 
 // normalizeBaseURL turns a full URL or a bare domain into a URL the endpoint

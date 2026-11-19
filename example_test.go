@@ -2,8 +2,10 @@ package tronzap_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -165,6 +167,72 @@ func ExampleClient_StartSubscription() {
 	fmt.Println(stopped.Status)
 }
 
+// A bulk order is priced first and started from the calculation. When the price
+// changed in between, the error carries the new calculation: confirm the new
+// total, then start it.
+func ExampleClient_BulkCreate() {
+	client := tronzap.NewClient("your_api_token", "your_api_secret")
+	ctx := context.Background()
+
+	calculation, err := client.BulkCalculate(ctx, tronzap.BulkCalculateRequest{
+		Items: []tronzap.BulkItem{
+			{Address: "TRecipientAddress1", Amount: 65000},
+			{Address: "TRecipientAddress2", Amount: 131000},
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, row := range calculation.Rejected {
+		fmt.Printf("row %d rejected: %s\n", row.Row, row.Reason)
+	}
+
+	order, err := client.BulkCreate(ctx, tronzap.BulkCreateRequest{ID: calculation.ID, ExternalID: "order-42"})
+	var apiErr *tronzap.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == tronzap.CodeBulkPriceChanged {
+		var newCalculation tronzap.BulkCalculation
+		if _, err := apiErr.DecodeResult(&newCalculation); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("price changed from %s to %s TRX\n", calculation.TotalAmount, newCalculation.TotalAmount)
+		order, err = client.BulkCreate(ctx, tronzap.BulkCreateRequest{ID: newCalculation.ID, ExternalID: "order-42"})
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for order.Status == tronzap.BulkStatusProcessing {
+		time.Sleep(10 * time.Second)
+		if order, err = client.BulkCheck(ctx, tronzap.BulkOrderRequest{ID: order.ID}); err != nil {
+			log.Fatal(err)
+		}
+	}
+	report, err := client.BulkReport(ctx, tronzap.BulkReportRequest{ID: order.ID, Status: tronzap.BulkRowSkipped})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Print(report)
+}
+
+// A webhook handler checks the signature against the raw body before trusting it.
+func ExampleClient_VerifyWebhookSignature() {
+	client := tronzap.NewClient("your_api_token", "your_api_secret")
+
+	http.HandleFunc("/tronzap/bulk", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil || !client.VerifyWebhookSignature(body, r.Header.Get("X-Signature")) {
+			http.Error(w, "invalid signature", http.StatusForbidden)
+			return
+		}
+		var order tronzap.BulkOrder
+		if err := json.Unmarshal(body, &order); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		fmt.Println(order.ExternalID, order.Status)
+	})
+}
+
 // Errors carry enough structure to decide whether to fix the request, top up the
 // account, or retry.
 func ExampleAPIError() {
@@ -187,6 +255,8 @@ func ExampleAPIError() {
 			fmt.Println("top up the account")
 		case tronzap.CodeAddressNotActivated:
 			fmt.Println("activate the address first")
+		case tronzap.CodeRateLimited:
+			fmt.Println("retry after", apiErr.RetryAfter)
 		default:
 			fmt.Printf("api error %d: %s (request %s)\n", apiErr.Code, apiErr.Message, apiErr.RequestID)
 		}

@@ -150,6 +150,12 @@ services, err := client.GetServices(ctx)
 | `CheckSubscription(ctx, req)` | `/v1/subscription/check` | Status de uma assinatura, por id ou id externo |
 | `StopSubscription(ctx, req)` | `/v1/subscription/stop` | Parar uma assinatura |
 | `GetSubscriptionHistory(ctx, req)` | `/v1/subscriptions/history` | Histórico paginado de assinaturas |
+| `BulkCalculate(ctx, req)` | `/v1/bulk/calculate` | Validar e calcular até 10 000 linhas de um pedido de energia em massa |
+| `BulkCreate(ctx, req)` | `/v1/bulk/create` | Iniciar um pedido em massa a partir de um cálculo |
+| `BulkCheck(ctx, req)` | `/v1/bulk/check` | Status e progresso de um pedido em massa, por id ou id externo |
+| `BulkHistory(ctx, req)` | `/v1/bulk/history` | Histórico paginado de pedidos em massa |
+| `BulkReport(ctx, req)` | `/v1/bulk/report` | Relatório por endereço de um pedido em massa em CSV |
+| `VerifyWebhookSignature(body, signature)` | — | Verificar o cabeçalho `X-Signature` do webhook de um pedido em massa |
 | `Do(ctx, endpoint, params, result)` | qualquer | Acesso direto a endpoints ainda não cobertos |
 
 Os campos opcionais ficam em estruturas de requisição em vez de longas listas de
@@ -287,6 +293,57 @@ retorna em vez disso os contadores de uso `TransactionsUsed`, `EnergyUsed` e
 `TotalPrice`. Uma assinatura com limite de transações não pode ser parada
 (`CodeCannotStopSubscription`).
 
+### Pedidos em massa
+
+Compre energia para até 10 000 endereços em um único pedido. `BulkCalculate` valida e calcula as linhas e retorna um cálculo válido por 10 minutos; nada é cobrado. Linhas inválidas não fazem a requisição falhar: elas voltam em `Rejected` com o número da linha. `BulkCreate` inicia o pedido; cada endereço é cobrado quando é processado, e endereços não ativados são pulados sem cobrança.
+
+Se o preço mudou desde o cálculo, `BulkCreate` não inicia o pedido e retorna um `*APIError` com o código `CodeBulkPriceChanged`. O novo cálculo está no resultado do erro: confirme o novo total e inicie-o pelo `ID`.
+
+```go
+calculation, err := client.BulkCalculate(ctx, tronzap.BulkCalculateRequest{
+	Items: []tronzap.BulkItem{
+		{Address: "TRecipientAddress1", Amount: 65000},
+		{Address: "TRecipientAddress2", Amount: 131000},
+	},
+	Duration: 1,
+})
+if err != nil {
+	return err
+}
+
+order, err := client.BulkCreate(ctx, tronzap.BulkCreateRequest{
+	ID:         calculation.ID,
+	ExternalID: "order-42",
+	WebhookURL: "https://example.com/tronzap/bulk",
+})
+var apiErr *tronzap.APIError
+if errors.As(err, &apiErr) && apiErr.Code == tronzap.CodeBulkPriceChanged {
+	var newCalculation tronzap.BulkCalculation
+	if _, err := apiErr.DecodeResult(&newCalculation); err != nil {
+		return err
+	}
+	// Novo cálculo: confirme o novo total e inicie-o
+	order, err = client.BulkCreate(ctx, tronzap.BulkCreateRequest{ID: newCalculation.ID, ExternalID: "order-42"})
+}
+if err != nil {
+	return err
+}
+
+order, err = client.BulkCheck(ctx, tronzap.BulkOrderRequest{ExternalID: "order-42"}) // Consulte até completed, partial ou failed
+
+report, err := client.BulkReport(ctx, tronzap.BulkReportRequest{ID: order.ID}) // row,address,amount,status,reason,charged,transaction_id
+```
+
+Com `WebhookURL`, a API envia um único `POST` quando o pedido se torna final. Verifique o cabeçalho `X-Signature` com o corpo bruto antes de confiar na requisição:
+
+```go
+body, err := io.ReadAll(r.Body)
+if err != nil || !client.VerifyWebhookSignature(body, r.Header.Get("X-Signature")) {
+	http.Error(w, "invalid signature", http.StatusForbidden)
+	return
+}
+```
+
 ## Tratamento de erros
 
 Toda falha é um `error` comum de Go. Quatro tipos concretos carregam os detalhes,
@@ -333,6 +390,20 @@ case errors.Is(err, tronzap.ErrNetwork):
 `APIError.RequestID` é o identificador que a API atribui a cada requisição:
 informe-o ao contatar o suporte.
 
+`APIError.Result` contém os dados que a API enviou com o erro, p. ex. o novo cálculo de `CodeBulkPriceChanged`; decodifique-os com `DecodeResult`. Um limite de requisições informado pela API é um `*APIError` com `CodeRateLimited`; `ErrRateLimit` corresponde apenas a um HTTP 429 sem resposta da API, p. ex. de um proxy. Os dois erros trazem `RetryAfter`, zero quando a API não informou quanto esperar:
+
+```go
+var apiErr *tronzap.APIError
+var httpErr *tronzap.HTTPError
+wait := time.Minute
+switch {
+case errors.As(err, &apiErr) && apiErr.Code == tronzap.CodeRateLimited && apiErr.RetryAfter > 0:
+	wait = apiErr.RetryAfter
+case errors.As(err, &httpErr) && httpErr.RetryAfter > 0:
+	wait = httpErr.RetryAfter
+}
+```
+
 Como um `NetworkError` envolve o erro de transporte subjacente, falhas de contexto
 continuam detectáveis diretamente:
 
@@ -364,6 +435,14 @@ código diferente de zero é sempre reportado como `*APIError`, nunca como
 | 30 | `CodeAMLCheckNotFound` | Verificação AML não encontrada |
 | 35 | `CodeServiceNotAvailable` | Serviço não disponível |
 | 50 | `CodeInvalidBandwidthAmount` | Quantidade de bandwidth inválida |
+| 90 | `CodeBulkNotFound` | Pedido em massa não encontrado |
+| 91 | `CodeBulkExpired` | O cálculo expirou, calcule novamente |
+| 92 | `CodeBulkPriceChanged` | O preço mudou; o novo cálculo está no resultado do erro |
+| 93 | `CodeBulkTooManyItems` | Mais de 10 000 linhas |
+| 94 | `CodeBulkNoValidItems` | Nenhuma linha válida; elas estão no resultado do erro |
+| 95 | `CodeBulkResourceNotSupported` | Apenas energia pode ser pedida em massa |
+| 96 | `CodePayloadTooLarge` | Corpo da requisição grande demais (HTTP 413) |
+| 429 | `CodeRateLimited` | Requisições demais; aguarde `RetryAfter`, quando informado |
 | 500 | `CodeInternalServerError` | Erro interno do servidor: contate o suporte |
 
 ## Campos decimais e de data

@@ -195,6 +195,14 @@ func TestErrorCodeValues(t *testing.T) {
 		"service not available":     tronzap.CodeServiceNotAvailable,
 		"invalid bandwidth amount":  tronzap.CodeInvalidBandwidthAmount,
 		"internal server error":     tronzap.CodeInternalServerError,
+		"bulk not found":            tronzap.CodeBulkNotFound,
+		"bulk expired":              tronzap.CodeBulkExpired,
+		"bulk price changed":        tronzap.CodeBulkPriceChanged,
+		"bulk too many items":       tronzap.CodeBulkTooManyItems,
+		"bulk no valid items":       tronzap.CodeBulkNoValidItems,
+		"bulk resource unsupported": tronzap.CodeBulkResourceNotSupported,
+		"payload too large":         tronzap.CodePayloadTooLarge,
+		"rate limited":              tronzap.CodeRateLimited,
 	}
 	want := map[string]int{
 		"auth":                      1,
@@ -212,6 +220,14 @@ func TestErrorCodeValues(t *testing.T) {
 		"service not available":     35,
 		"invalid bandwidth amount":  50,
 		"internal server error":     500,
+		"bulk not found":            90,
+		"bulk expired":              91,
+		"bulk price changed":        92,
+		"bulk too many items":       93,
+		"bulk no valid items":       94,
+		"bulk resource unsupported": 95,
+		"payload too large":         96,
+		"rate limited":              429,
 	}
 	for name, got := range tests {
 		if got != want[name] {

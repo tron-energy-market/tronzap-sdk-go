@@ -151,6 +151,12 @@ services, err := client.GetServices(ctx)
 | `CheckSubscription(ctx, req)` | `/v1/subscription/check` | Статус подписки по id или внешнему id |
 | `StopSubscription(ctx, req)` | `/v1/subscription/stop` | Остановить подписку |
 | `GetSubscriptionHistory(ctx, req)` | `/v1/subscriptions/history` | История подписок с пагинацией |
+| `BulkCalculate(ctx, req)` | `/v1/bulk/calculate` | Проверить и рассчитать до 10 000 строк массового заказа энергии |
+| `BulkCreate(ctx, req)` | `/v1/bulk/create` | Запустить массовый заказ по расчёту |
+| `BulkCheck(ctx, req)` | `/v1/bulk/check` | Статус и прогресс массового заказа по id или внешнему id |
+| `BulkHistory(ctx, req)` | `/v1/bulk/history` | История массовых заказов с пагинацией |
+| `BulkReport(ctx, req)` | `/v1/bulk/report` | Отчёт массового заказа по адресам в CSV |
+| `VerifyWebhookSignature(body, signature)` | — | Проверить заголовок `X-Signature` вебхука массового заказа |
 | `Do(ctx, endpoint, params, result)` | любой | Прямой доступ к ещё не обёрнутым endpoint'ам |
 
 Опциональные поля вынесены в структуры запросов, а не в длинные списки
@@ -288,6 +294,57 @@ history, err := client.GetSubscriptionHistory(ctx, tronzap.SubscriptionHistoryRe
 `TotalPrice`. Подписку с лимитом транзакций остановить нельзя
 (`CodeCannotStopSubscription`).
 
+### Массовые заказы
+
+Покупка энергии на 10 000 адресов одним заказом. `BulkCalculate` проверяет и рассчитывает строки и возвращает расчёт, действительный 10 минут; ничего не списывается. Некорректные строки не валят запрос: они возвращаются в `Rejected` с номером строки. `BulkCreate` запускает заказ; каждый адрес списывается в момент обработки, неактивированные адреса пропускаются без списания.
+
+Если цена изменилась после расчёта, `BulkCreate` не запускает заказ и возвращает `*APIError` с кодом `CodeBulkPriceChanged`. Новый расчёт — в результате ошибки: подтвердите новую сумму и запустите его по `ID`.
+
+```go
+calculation, err := client.BulkCalculate(ctx, tronzap.BulkCalculateRequest{
+	Items: []tronzap.BulkItem{
+		{Address: "TRecipientAddress1", Amount: 65000},
+		{Address: "TRecipientAddress2", Amount: 131000},
+	},
+	Duration: 1,
+})
+if err != nil {
+	return err
+}
+
+order, err := client.BulkCreate(ctx, tronzap.BulkCreateRequest{
+	ID:         calculation.ID,
+	ExternalID: "order-42",
+	WebhookURL: "https://example.com/tronzap/bulk",
+})
+var apiErr *tronzap.APIError
+if errors.As(err, &apiErr) && apiErr.Code == tronzap.CodeBulkPriceChanged {
+	var newCalculation tronzap.BulkCalculation
+	if _, err := apiErr.DecodeResult(&newCalculation); err != nil {
+		return err
+	}
+	// Новый расчёт: подтвердите новую сумму и запустите его
+	order, err = client.BulkCreate(ctx, tronzap.BulkCreateRequest{ID: newCalculation.ID, ExternalID: "order-42"})
+}
+if err != nil {
+	return err
+}
+
+order, err = client.BulkCheck(ctx, tronzap.BulkOrderRequest{ExternalID: "order-42"}) // Опрашивайте до completed, partial или failed
+
+report, err := client.BulkReport(ctx, tronzap.BulkReportRequest{ID: order.ID}) // row,address,amount,status,reason,charged,transaction_id
+```
+
+С `WebhookURL` API один раз отправит на него `POST`, когда заказ станет финальным. Проверьте заголовок `X-Signature` по сырому телу, прежде чем доверять запросу:
+
+```go
+body, err := io.ReadAll(r.Body)
+if err != nil || !client.VerifyWebhookSignature(body, r.Header.Get("X-Signature")) {
+	http.Error(w, "invalid signature", http.StatusForbidden)
+	return
+}
+```
+
 ## Обработка ошибок
 
 Любой сбой — это обычная ошибка Go. Детали несут четыре конкретных типа, и каждый
@@ -334,6 +391,20 @@ case errors.Is(err, tronzap.ErrNetwork):
 `APIError.RequestID` — идентификатор, который API присваивает каждому запросу;
 указывайте его при обращении в поддержку.
 
+`APIError.Result` — данные, которые API вернул вместе с ошибкой, например новый расчёт для `CodeBulkPriceChanged`; декодируйте их через `DecodeResult`. Лимит запросов, о котором сообщает API, — это `*APIError` с `CodeRateLimited`; `ErrRateLimit` совпадает только с HTTP 429 без ответа API, например от прокси. Обе ошибки содержат `RetryAfter` — ноль, если API не сообщил, сколько ждать:
+
+```go
+var apiErr *tronzap.APIError
+var httpErr *tronzap.HTTPError
+wait := time.Minute
+switch {
+case errors.As(err, &apiErr) && apiErr.Code == tronzap.CodeRateLimited && apiErr.RetryAfter > 0:
+	wait = apiErr.RetryAfter
+case errors.As(err, &httpErr) && httpErr.RetryAfter > 0:
+	wait = httpErr.RetryAfter
+}
+```
+
 Поскольку `NetworkError` оборачивает исходную транспортную ошибку, сбои контекста
 остаются напрямую различимыми:
 
@@ -364,6 +435,14 @@ if errors.Is(err, context.DeadlineExceeded) { /* истёк дедлайн */ }
 | 30 | `CodeAMLCheckNotFound` | AML-проверка не найдена |
 | 35 | `CodeServiceNotAvailable` | Сервис недоступен |
 | 50 | `CodeInvalidBandwidthAmount` | Некорректное количество bandwidth |
+| 90 | `CodeBulkNotFound` | Массовый заказ не найден |
+| 91 | `CodeBulkExpired` | Расчёт истёк, рассчитайте заново |
+| 92 | `CodeBulkPriceChanged` | Цена изменилась; новый расчёт в результате ошибки |
+| 93 | `CodeBulkTooManyItems` | Больше 10 000 строк |
+| 94 | `CodeBulkNoValidItems` | Нет корректных строк; они в результате ошибки |
+| 95 | `CodeBulkResourceNotSupported` | Массово можно заказать только энергию |
+| 96 | `CodePayloadTooLarge` | Слишком большое тело запроса (HTTP 413) |
+| 429 | `CodeRateLimited` | Слишком много запросов; подождите `RetryAfter`, если указано |
 | 500 | `CodeInternalServerError` | Внутренняя ошибка сервера — обратитесь в поддержку |
 
 ## Числовые поля и даты

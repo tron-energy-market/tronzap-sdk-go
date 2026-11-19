@@ -49,6 +49,36 @@ const (
 	SubscriptionStatusExpired = "expired"
 )
 
+// Bulk order statuses. A calculation is a draft; a started order moves from
+// processing to completed, partial or failed.
+const (
+	// BulkStatusDraft means a calculation that was not started.
+	BulkStatusDraft = "draft"
+	// BulkStatusProcessing means the addresses are being processed.
+	BulkStatusProcessing = "processing"
+	// BulkStatusCompleted means energy was delivered to every address.
+	BulkStatusCompleted = "completed"
+	// BulkStatusPartial means energy was delivered to some addresses.
+	BulkStatusPartial = "partial"
+	// BulkStatusFailed means energy was delivered to no address.
+	BulkStatusFailed = "failed"
+)
+
+// Bulk order address results, the status column of [Client.BulkReport] and the
+// values of [BulkReportRequest.Status].
+const (
+	// BulkRowDelivered means energy was delivered.
+	BulkRowDelivered = "delivered"
+	// BulkRowFailed means energy was not delivered and the charge was refunded.
+	BulkRowFailed = "failed"
+	// BulkRowInReview means support is checking the address.
+	BulkRowInReview = "in_review"
+	// BulkRowSkipped means the address was not bought and not charged.
+	BulkRowSkipped = "skipped"
+	// BulkRowPending means the address was not processed yet.
+	BulkRowPending = "pending"
+)
+
 // AML check types.
 const (
 	// AMLTypeAddress screens a wallet address.
@@ -730,4 +760,158 @@ type SubscriptionHistory struct {
 	Total int `json:"total"`
 	// Items holds the subscriptions on this page.
 	Items []Subscription `json:"items"`
+}
+
+// BulkItem is one row of a bulk energy order.
+type BulkItem struct {
+	// Address is the TRON address to deliver energy to.
+	Address string `json:"address"`
+	// Amount is the energy amount.
+	Amount int64 `json:"amount"`
+}
+
+// BulkCalculateRequest validates and prices the rows of a bulk energy order.
+type BulkCalculateRequest struct {
+	// Items are the rows, at most 10 000. Required.
+	Items []BulkItem
+	// Duration is the rental period in hours, one of the periods available to
+	// you (see [Client.GetServices]). Defaults to 1 when zero.
+	Duration int
+}
+
+// BulkCreateRequest starts a bulk order from a calculation.
+type BulkCreateRequest struct {
+	// ID is the calculation's [BulkCalculation.ID]. Required.
+	ID string
+	// ExternalID is your own identifier for the order, unique per account. Optional.
+	ExternalID string
+	// Force buys even if the price rises while the order runs, within MaxPriceIncrease.
+	Force bool
+	// MaxPriceIncrease is the allowed price increase in percent, 0 to 100, used
+	// only with Force. The API default of 20 applies when it is nil.
+	MaxPriceIncrease *int
+	// WebhookURL is a public https URL called once when the order becomes final. Optional.
+	WebhookURL string
+}
+
+// BulkOrderRequest looks up one bulk order. Exactly one of the two identifiers
+// is enough; supplying neither is rejected before any request is sent.
+type BulkOrderRequest struct {
+	// ID is the identifier the API assigned to the order.
+	ID string
+	// ExternalID is the identifier you supplied when starting the order.
+	ExternalID string
+}
+
+// BulkReportRequest selects the report of one bulk order. Exactly one of the
+// two identifiers is enough; supplying neither is rejected before any request
+// is sent.
+type BulkReportRequest struct {
+	// ID is the identifier the API assigned to the order.
+	ID string
+	// ExternalID is the identifier you supplied when starting the order.
+	ExternalID string
+	// Status keeps only the rows with this result, one of the BulkRow*
+	// constants. Optional.
+	Status string
+}
+
+// BulkHistoryRequest pages through your bulk orders.
+type BulkHistoryRequest struct {
+	// Page is the 1-based page number. Defaults to 1 when zero.
+	Page int
+	// PerPage is the page size, between 1 and 50. Defaults to 10 when zero.
+	PerPage int
+}
+
+// BulkCalculation is a priced bulk order that was not started yet.
+type BulkCalculation struct {
+	// ID identifies the calculation; pass it as [BulkCreateRequest.ID].
+	ID string `json:"id"`
+	// Status is always [BulkStatusDraft].
+	Status string `json:"status"`
+	// Resource is the resource ordered, always "energy".
+	Resource string `json:"resource"`
+	// Duration is the rental period in hours.
+	Duration int `json:"duration"`
+	// TotalAmount is the estimated total of the accepted rows, in TRX.
+	TotalAmount Number `json:"total_amount"`
+	// Accepted is the number of accepted rows.
+	Accepted int `json:"accepted"`
+	// RejectedCount is the number of rejected rows.
+	RejectedCount int `json:"rejected_count"`
+	// Rejected lists the rejected rows.
+	Rejected []BulkRejectedRow `json:"rejected"`
+	// ExpiresAt is when the calculation expires.
+	ExpiresAt Time `json:"expires_at"`
+}
+
+// BulkRejectedRow is a row a calculation did not accept.
+type BulkRejectedRow struct {
+	// Row is the row's position in [BulkCalculateRequest.Items], starting at 1.
+	Row int `json:"row"`
+	// Address is the address as sent.
+	Address string `json:"address"`
+	// Reason says why the row was rejected, such as "invalid_address" or "duplicate".
+	Reason string `json:"reason"`
+}
+
+// BulkOrder is a started bulk order and its progress.
+type BulkOrder struct {
+	// ID is the identifier assigned by the API.
+	ID string `json:"id"`
+	// ExternalID is the identifier you supplied, empty if you supplied none.
+	ExternalID string `json:"external_id"`
+	// Status is the current status, one of the BulkStatus* constants.
+	Status string `json:"status"`
+	// Resource is the resource ordered, always "energy".
+	Resource string `json:"resource"`
+	// Duration is the rental period in hours.
+	Duration int `json:"duration"`
+	// Force reports whether price increases are allowed.
+	Force bool `json:"force"`
+	// MaxPriceIncrease is the allowed price increase in percent, 0 without Force.
+	MaxPriceIncrease int `json:"max_price_increase"`
+	// WebhookURL is the URL called when the order becomes final, empty if none.
+	WebhookURL string `json:"webhook_url"`
+	// Total is the number of accepted addresses.
+	Total int `json:"total"`
+	// Processed is the number of addresses with a final result.
+	Processed int `json:"processed"`
+	// Delivered is the number of addresses energy was delivered to.
+	Delivered int `json:"delivered"`
+	// Failed is the number of addresses not delivered and refunded.
+	Failed int `json:"failed"`
+	// InReview is the number of addresses support is checking.
+	InReview int `json:"in_review"`
+	// Skipped is the number of addresses not bought and not charged.
+	Skipped int `json:"skipped"`
+	// SkippedByReason counts the skipped addresses by reason, such as
+	// "address_not_activated" or "price_increased".
+	SkippedByReason map[string]int `json:"skipped_by_reason"`
+	// RejectedCount is the number of rows the calculation rejected.
+	RejectedCount int `json:"rejected_count"`
+	// TotalAmount is the estimated total from the calculation, in TRX.
+	TotalAmount Number `json:"total_amount"`
+	// ChargedAmount is the amount charged so far, in TRX. It may decrease while
+	// addresses in review are refunded.
+	ChargedAmount Number `json:"charged_amount"`
+	// CreatedAt is when the calculation was created.
+	CreatedAt Time `json:"created_at"`
+	// StartedAt is when the order started.
+	StartedAt Time `json:"started_at"`
+	// FinalizedAt is when the order became final, zero while it is processing.
+	FinalizedAt Time `json:"finalized_at"`
+}
+
+// BulkHistory is one page of your bulk orders.
+type BulkHistory struct {
+	// Page is the 1-based number of this page.
+	Page int `json:"page"`
+	// PerPage is the page size.
+	PerPage int `json:"per_page"`
+	// Total is the number of orders across all pages.
+	Total int `json:"total"`
+	// Items holds the orders on this page.
+	Items []BulkOrder `json:"items"`
 }

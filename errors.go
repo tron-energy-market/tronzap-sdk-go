@@ -1,15 +1,18 @@
 package tronzap
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"syscall"
+	"time"
 )
 
 // API error codes returned in the "code" field of an API response.
@@ -50,6 +53,30 @@ const (
 	CodeServiceNotAvailable = 35
 	// CodeInvalidBandwidthAmount means the requested bandwidth amount is out of range.
 	CodeInvalidBandwidthAmount = 50
+	// CodeBulkNotFound means no bulk order matches the given id or external id.
+	// A calculation that was never started is not an order.
+	CodeBulkNotFound = 90
+	// CodeBulkExpired means the bulk calculation expired; calculate again. A
+	// calculation is valid for 10 minutes.
+	CodeBulkExpired = 91
+	// CodeBulkPriceChanged means the price changed since the calculation. The new
+	// calculation is in the error's result, see [APIError.DecodeResult]; start the
+	// order with its ID.
+	CodeBulkPriceChanged = 92
+	// CodeBulkTooManyItems means a calculation has more than 10 000 rows.
+	CodeBulkTooManyItems = 93
+	// CodeBulkNoValidItems means no row of a calculation is valid. The rejected
+	// rows are in the error's result, see [APIError.DecodeResult].
+	CodeBulkNoValidItems = 94
+	// CodeBulkResourceNotSupported means the resource cannot be ordered in bulk;
+	// only energy can.
+	CodeBulkResourceNotSupported = 95
+	// CodePayloadTooLarge means the request body is too large (HTTP 413); send
+	// fewer rows in one calculation.
+	CodePayloadTooLarge = 96
+	// CodeRateLimited means too many requests (HTTP 429). Wait
+	// [APIError.RetryAfter], when it is set, and retry.
+	CodeRateLimited = 429
 	// CodeInternalServerError means the API failed internally; contact support if it persists.
 	CodeInternalServerError = 500
 )
@@ -64,7 +91,8 @@ var (
 
 	// ErrHTTP matches any [HTTPError]: a non-2xx response without a usable API payload.
 	ErrHTTP = errors.New("tronzap: http error")
-	// ErrRateLimit matches an [HTTPError] with status 429.
+	// ErrRateLimit matches an [HTTPError] with status 429. A rate limit reported by
+	// the API itself is an [APIError] with [CodeRateLimited] instead.
 	ErrRateLimit = errors.New("tronzap: too many requests")
 	// ErrUnauthorized matches an [HTTPError] with status 401 or 403.
 	ErrUnauthorized = errors.New("tronzap: unauthorized")
@@ -103,6 +131,26 @@ type APIError struct {
 	RequestID string
 	// StatusCode is the HTTP status the payload arrived with.
 	StatusCode int
+	// Result is the "result" field sent with the error, such as the new
+	// calculation of [CodeBulkPriceChanged], or nil. Decode it with
+	// [APIError.DecodeResult].
+	Result json.RawMessage
+	// RetryAfter is how long to wait before retrying, from the Retry-After
+	// header or the "retry_after" field, or zero when the API sent neither.
+	RetryAfter time.Duration
+}
+
+// DecodeResult decodes [APIError.Result] into v, such as a *[BulkCalculation]
+// for [CodeBulkPriceChanged] or [CodeBulkNoValidItems]. It reports whether the
+// error carried a result.
+func (e *APIError) DecodeResult(v any) (bool, error) {
+	if len(e.Result) == 0 || bytes.Equal(e.Result, []byte("null")) {
+		return false, nil
+	}
+	if err := json.Unmarshal(e.Result, v); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Error implements the error interface.
@@ -125,6 +173,9 @@ type HTTPError struct {
 	Message string
 	// Body is the raw response body, truncated to nothing more than what was read.
 	Body string
+	// RetryAfter is how long to wait before retrying, from the Retry-After
+	// header, or zero when it was not sent.
+	RetryAfter time.Duration
 }
 
 // Error implements the error interface.

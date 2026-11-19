@@ -13,10 +13,12 @@
 //	export TRONZAP_TRANSACTION_ID=id             # optional
 //	export TRONZAP_AML_CHECK_ID=id               # optional
 //	export TRONZAP_SUBSCRIPTION_ID=id            # optional
+//	export TRONZAP_BULK_ID=id                    # optional
 //	go run ./examples/basic
 //
 // Setting TRONZAP_ALLOW_PURCHASES=1 additionally exercises the endpoints that
-// create transactions and AML checks. Those DEBIT THE ACCOUNT BALANCE. It is
+// create transactions, AML checks and a one-address bulk order. Those DEBIT THE
+// ACCOUNT BALANCE. It is
 // meant for verifying an integration against a development environment, and it
 // also needs TRONZAP_ADDRESS.
 //
@@ -96,13 +98,15 @@ func run(ctx context.Context, client *tronzap.Client) error {
 	step("services", func() error { return showCatalogue(ctx, client) })
 	step("aml-checks/history", func() error { return showAMLHistory(ctx, client) })
 	step("subscriptions, subscriptions/history", func() error { return showSubscriptions(ctx, client) })
+	step("bulk/history", func() error { return showBulkHistory(ctx, client) })
 
 	// The remaining calls need something to look at, so each is skipped unless its
 	// variable is set.
 	if address := os.Getenv("TRONZAP_ADDRESS"); address != "" {
 		step("address-info, calculate", func() error { return showAddress(ctx, client, address) })
+		step("bulk/calculate", func() error { return showBulkCalculation(ctx, client, address) })
 	} else {
-		skipped("address-info, calculate", "TRONZAP_ADDRESS")
+		skipped("address-info, calculate, bulk/calculate", "TRONZAP_ADDRESS")
 	}
 
 	from, to := os.Getenv("TRONZAP_FROM_ADDRESS"), os.Getenv("TRONZAP_TO_ADDRESS")
@@ -130,6 +134,12 @@ func run(ctx context.Context, client *tronzap.Client) error {
 		skipped("subscription/check", "TRONZAP_SUBSCRIPTION_ID")
 	}
 
+	if id := os.Getenv("TRONZAP_BULK_ID"); id != "" {
+		step("bulk/check, bulk/report", func() error { return showBulkOrder(ctx, client, id) })
+	} else {
+		skipped("bulk/check and bulk/report", "TRONZAP_BULK_ID")
+	}
+
 	switch address := os.Getenv("TRONZAP_ADDRESS"); {
 	case !purchasesAllowed():
 		skipped("transaction/new and aml-checks/new, which spend funds", "TRONZAP_ALLOW_PURCHASES=1")
@@ -142,6 +152,7 @@ func run(ctx context.Context, client *tronzap.Client) error {
 		step("transaction/new bandwidth", func() error { return buyBandwidth(ctx, client, address) })
 		step("transaction/new resource_bundle", func() error { return buyResourceBundle(ctx, client, address) })
 		step("aml-checks/new", func() error { return createAMLCheck(ctx, client, address) })
+		step("bulk/create, bulk/check, bulk/report", func() error { return buyBulk(ctx, client, address) })
 		if plan := os.Getenv("TRONZAP_SUBSCRIPTION_PLAN"); plan != "" {
 			step("subscription/start, subscription/stop", func() error { return trySubscription(ctx, client, plan, address) })
 		} else {
@@ -246,6 +257,63 @@ func showSubscription(ctx context.Context, client *tronzap.Client, id string) er
 	}
 	fmt.Printf("\nSubscription %s: plan=%s status=%s address=%s created=%s expires=%s\n",
 		sub.ID, sub.SubscriptionID, sub.Status, sub.Address, timestamp(sub.CreatedAt), timestamp(sub.ExpireAt))
+	return nil
+}
+
+func showBulkHistory(ctx context.Context, client *tronzap.Client) error {
+	history, err := client.BulkHistory(ctx, tronzap.BulkHistoryRequest{PerPage: 3})
+	if err != nil {
+		return fmt.Errorf("bulk history: %w", err)
+	}
+	fmt.Printf("\nBulk orders: %d total, %d on page %d\n", history.Total, len(history.Items), history.Page)
+	for i := range history.Items {
+		printBulkOrder(&history.Items[i])
+	}
+	return nil
+}
+
+// showBulkCalculation prices one valid and one invalid row. A calculation
+// charges nothing; the invalid row comes back as rejected.
+func showBulkCalculation(ctx context.Context, client *tronzap.Client, address string) error {
+	calculation, err := client.BulkCalculate(ctx, tronzap.BulkCalculateRequest{
+		Items: []tronzap.BulkItem{
+			{Address: address, Amount: energyAmount},
+			{Address: "not-an-address", Amount: energyAmount},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("bulk calculate: %w", err)
+	}
+	fmt.Printf("\nBulk calculation %s: %d accepted, total %s, expires %s\n",
+		calculation.ID, calculation.Accepted, calculation.TotalAmount, timestamp(calculation.ExpiresAt))
+	for _, row := range calculation.Rejected {
+		fmt.Printf("  rejected row %d: %s\n", row.Row, row.Reason)
+	}
+	return nil
+}
+
+func showBulkOrder(ctx context.Context, client *tronzap.Client, id string) error {
+	order, err := client.BulkCheck(ctx, tronzap.BulkOrderRequest{ID: id})
+	if err != nil {
+		return fmt.Errorf("bulk check: %w", err)
+	}
+	fmt.Println()
+	printBulkOrder(order)
+	return printBulkReport(ctx, client, order.ID)
+}
+
+func printBulkOrder(order *tronzap.BulkOrder) {
+	fmt.Printf("  %s %s: %d of %d processed, %d delivered, %d skipped %v, charged %s of %s\n",
+		order.ID, order.Status, order.Processed, order.Total, order.Delivered, order.Skipped,
+		order.SkippedByReason, order.ChargedAmount, order.TotalAmount)
+}
+
+func printBulkReport(ctx context.Context, client *tronzap.Client, id string) error {
+	report, err := client.BulkReport(ctx, tronzap.BulkReportRequest{ID: id})
+	if err != nil {
+		return fmt.Errorf("bulk report: %w", err)
+	}
+	fmt.Println("  " + strings.ReplaceAll(strings.TrimSpace(report), "\n", "\n  "))
 	return nil
 }
 
@@ -412,6 +480,42 @@ func createAMLCheck(ctx context.Context, client *tronzap.Client, address string)
 	return showAMLCheck(ctx, client, check.ID)
 }
 
+// buyBulk starts a one-address bulk order. When the price changed since the
+// calculation, it starts the new calculation the error carries.
+func buyBulk(ctx context.Context, client *tronzap.Client, address string) error {
+	calculation, err := client.BulkCalculate(ctx, tronzap.BulkCalculateRequest{
+		Items: []tronzap.BulkItem{{Address: address, Amount: energyAmount}},
+	})
+	if err != nil {
+		return fmt.Errorf("bulk calculate: %w", err)
+	}
+
+	orderID := externalID("bulk")
+	order, err := client.BulkCreate(ctx, tronzap.BulkCreateRequest{ID: calculation.ID, ExternalID: orderID})
+	var apiErr *tronzap.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == tronzap.CodeBulkPriceChanged {
+		var newCalculation tronzap.BulkCalculation
+		if found, decodeErr := apiErr.DecodeResult(&newCalculation); !found || decodeErr != nil {
+			return errors.Join(err, decodeErr)
+		}
+		fmt.Printf("\nbulk/create: price changed, new total %s\n", newCalculation.TotalAmount)
+		order, err = client.BulkCreate(ctx, tronzap.BulkCreateRequest{ID: newCalculation.ID, ExternalID: orderID})
+	}
+	if err != nil {
+		return fmt.Errorf("bulk create: %w", err)
+	}
+
+	for i := 0; i < 10 && order.Status == tronzap.BulkStatusProcessing; i++ {
+		time.Sleep(3 * time.Second)
+		if order, err = client.BulkCheck(ctx, tronzap.BulkOrderRequest{ExternalID: orderID}); err != nil {
+			return fmt.Errorf("bulk check: %w", err)
+		}
+	}
+	fmt.Println("\nbulk/create:")
+	printBulkOrder(order)
+	return printBulkReport(ctx, client, order.ID)
+}
+
 // trySubscription starts a one-day subscription and stops it, so the run leaves
 // nothing active that keeps charging the balance.
 func trySubscription(ctx context.Context, client *tronzap.Client, plan, address string) error {
@@ -465,6 +569,8 @@ func describe(err error) string {
 			return "insufficient funds: top up the account at https://tronzap.com"
 		case tronzap.CodeInvalidTronAddress:
 			return fmt.Sprintf("invalid TRON address (%s)", apiErr.Key)
+		case tronzap.CodeRateLimited:
+			return fmt.Sprintf("rate limited: retry after %v", apiErr.RetryAfter)
 		default:
 			return fmt.Sprintf("api error %d [%s]: %s (request %s)",
 				apiErr.Code, apiErr.Key, apiErr.Message, apiErr.RequestID)

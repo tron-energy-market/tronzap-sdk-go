@@ -78,6 +78,13 @@ func (c *capture) HeaderValue(name string) string {
 // and status, and returns a client pointed at it plus the captured request.
 func newServer(t *testing.T, status int, response string, opts ...tronzap.Option) (*tronzap.Client, *capture) {
 	t.Helper()
+	return newServerWithHeaders(t, status, nil, response, opts...)
+}
+
+// newServerWithHeaders is [newServer] with extra response headers, which
+// override the default JSON Content-Type.
+func newServerWithHeaders(t *testing.T, status int, headers map[string]string, response string, opts ...tronzap.Option) (*tronzap.Client, *capture) {
+	t.Helper()
 
 	got := &capture{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +95,9 @@ func newServer(t *testing.T, status int, response string, opts ...tronzap.Option
 		got.record(r, string(body))
 
 		w.Header().Set("Content-Type", "application/json")
+		for name, value := range headers {
+			w.Header().Set(name, value)
+		}
 		w.WriteHeader(status)
 		if _, err := io.WriteString(w, response); err != nil {
 			t.Errorf("writing response: %v", err)
